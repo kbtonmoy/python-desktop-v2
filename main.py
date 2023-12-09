@@ -220,41 +220,6 @@ class DatabaseApp:
     def update_progress(self, value):
         self.progress['value'] = value
 
-    def process_video(self, screenshot_path, video_path, output_path, temp_folder):
-        change_settings({"TEMP_FOLDER": temp_folder})
-        def process_frame(frame):
-            # Convert frame to RGB (OpenCV uses BGR by default)
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # Create a mask where black pixels ([0,0,0]) are detected in the frame
-            mask = cv2.inRange(frame_rgb, (0, 0, 0), (10, 10, 10))
-            # Invert mask to get parts that are not black
-            mask_inv = cv2.bitwise_not(mask)
-            # Use the mask to extract the facecam area (excluding black background)
-            facecam_area = cv2.bitwise_and(frame_rgb, frame_rgb, mask=mask_inv)
-            # Resize screenshot to frame size
-            resized_screenshot = cv2.resize(screenshot, (frame.shape[1], frame.shape[0]))
-            # Combine the facecam area and the resized screenshot
-            combined = cv2.bitwise_and(resized_screenshot, resized_screenshot, mask=mask)
-            combined = cv2.add(combined, facecam_area)
-            # Convert back to BGR for MoviePy
-            final_frame = cv2.cvtColor(combined, cv2.COLOR_RGB2BGR)
-            return final_frame
-
-        # Load your screenshot and facecam video
-        screenshot = cv2.imread(screenshot_path)
-        facecam_video = VideoFileClip(video_path)
-        processed_video = facecam_video.fl_image(process_frame)
-        # Use user-selected export directory instead of hardcoded 'videos'
-        output_dir = self.export_dir if self.export_dir else 'videos'
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        # Generate the full output path
-        full_output_path = os.path.join(output_dir, output_path)
-
-        # Write the processed video to the full output path
-        processed_video.write_videofile(full_output_path, fps=facecam_video.fps)
-
     def update_video_database(self, root_domain, full_output_path, cursor, connection):
         try:
             with open("video_description.txt", "r") as desc_file:
@@ -277,6 +242,68 @@ class DatabaseApp:
         except Exception as e:
             messagebox.showinfo("Info", f"Error updating database: {e}")
 
+    def process_video(self, screenshot_path, video_path, output_path, temp_folder, image2_path, image3_path, timeline2, timeline3):
+        def convert_to_seconds(timeline):
+            mm, ss, ms = map(int, timeline.split(':'))
+            return mm * 60 + ss + ms / 1000
+
+        # Convert timelines for additional images
+        timeline2_seconds = convert_to_seconds(timeline2)
+        timeline3_seconds = convert_to_seconds(timeline3)
+
+        # Load the screenshots
+        screenshot1 = cv2.imread(screenshot_path)
+        screenshot2 = cv2.imread(image2_path)
+        screenshot3 = cv2.imread(image3_path)
+
+        # Initialize a class attribute to track the elapsed time
+        self.current_time = 0
+
+        def process_frame(frame):
+            # Update the current time
+            self.current_time += 1.0 / facecam_video.fps
+
+            # Determine which screenshot to use based on the current time
+            if self.current_time < timeline2_seconds:
+                current_screenshot = screenshot1
+            elif self.current_time < timeline3_seconds:
+                current_screenshot = screenshot2
+            else:
+                current_screenshot = screenshot3
+
+            # Convert frame to RGB (OpenCV uses BGR by default)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Create a mask where black pixels ([0,0,0]) are detected in the frame
+            mask = cv2.inRange(frame_rgb, (0, 0, 0), (10, 10, 10))
+            # Invert mask to get parts that are not black
+            mask_inv = cv2.bitwise_not(mask)
+            # Use the mask to extract the facecam area (excluding black background)
+            facecam_area = cv2.bitwise_and(frame_rgb, frame_rgb, mask=mask_inv)
+            # Resize current screenshot to frame size
+            resized_screenshot = cv2.resize(current_screenshot, (frame.shape[1], frame.shape[0]))
+            # Combine the facecam area and the resized screenshot
+            combined = cv2.bitwise_and(resized_screenshot, resized_screenshot, mask=mask)
+            combined = cv2.add(combined, facecam_area)
+            # Convert back to BGR for MoviePy
+            final_frame = cv2.cvtColor(combined, cv2.COLOR_RGB2BGR)
+            return final_frame
+
+            # Wrapper function to track time
+
+        facecam_video = VideoFileClip(video_path)
+
+        # Apply the process_frame function to each frame of the video
+        processed_video = facecam_video.fl_image(process_frame)
+        # Use user-selected export directory
+        output_dir = self.export_dir if self.export_dir else 'videos'
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Generate the full output path
+        full_output_path = os.path.join(output_dir, output_path)
+
+        # Write the processed video to the full output path
+        processed_video.write_videofile(full_output_path, fps=facecam_video.fps)
 
     def video_processing_thread(self, data, cursor, total_threads):
         local_connection = mysql.connector.connect(host=self.host, user=self.user, password=self.password,
@@ -284,12 +311,14 @@ class DatabaseApp:
         local_cursor = local_connection.cursor()
         try:
             total_videos = len(data)
-            for index, (screenshot_path, video_path, output_path, root_domain) in enumerate(data):
+            for index, (screenshot_path, video_path, output_path, root_domain, image2_path, image3_path, timeline2,
+                        timeline3) in enumerate(data):
                 # Unique temporary folder for each video processing
                 temp_folder = f"temp_{root_domain}_{threading.get_ident()}"
                 os.makedirs(temp_folder, exist_ok=True)
 
-                self.process_video(screenshot_path, video_path, output_path, temp_folder)
+                self.process_video(screenshot_path, video_path, output_path, temp_folder, image2_path, image3_path,
+                                   timeline2, timeline3)
                 full_output_path = os.path.join(self.export_dir if self.export_dir else 'videos', output_path)
                 # Clean up the temporary folder after processing this video
 
@@ -335,25 +364,30 @@ class DatabaseApp:
         self.progress['value'] = 0
         self.completed_threads = 0  # Reset the counter
 
-        num_threads = 5
+        total_threads = 5
         threads = []
 
         # Constant path for the video
         video_path = self.video_path if self.video_path else 'video.mp4'
         output_paths = [f"{root_domain}.mp4" for root_domain, _ in screenshots]
 
-        for i in range(num_threads):
-            thread_screenshots = screenshots[i::num_threads]
-            thread_output_paths = output_paths[i::num_threads]
-            thread_data = [(s[1], video_path, op, s[0]) for s, op in zip(thread_screenshots, thread_output_paths)]
+        for i in range(total_threads):
+            thread_screenshots = screenshots[i::total_threads]
+            thread_output_paths = output_paths[i::total_threads]
 
-            thread = Thread(target=self.video_processing_thread, args=(thread_data, cursor, self.on_all_threads_complete))
+            # Include additional image paths and timelines
+            thread_data = [(s[1], video_path, op, s[0], self.image2_path_var.get(), self.image3_path_var.get(),
+                            self.timeline2_var.get(), self.timeline3_var.get()) for s, op in
+                           zip(thread_screenshots, thread_output_paths)]
+
+            thread = Thread(target=self.video_processing_thread, args=(thread_data, cursor, total_threads))
             threads.append(thread)
             thread.start()
 
         cursor.close()
 
     def open_video_preparation_frame(self):
+        # New window (or frame) for video preparation settings
         self.clear_all_widgets()
 
         # Input field for video file
@@ -362,24 +396,42 @@ class DatabaseApp:
         tk.Entry(self.root, textvariable=self.video_path_var, state='readonly').pack()
         tk.Button(self.root, text="Browse", command=self.select_video_file).pack()
 
+        # Input field for export directory
+        tk.Label(self.root, text="Select export directory:").pack()
+        self.export_dir_var = tk.StringVar()
+        tk.Entry(self.root, textvariable=self.export_dir_var, state='readonly').pack()
+        tk.Button(self.root, text="Browse", command=self.select_export_directory).pack()
+
         # Input fields for additional images
-        self.image1_path_var = tk.StringVar()
-        tk.Label(self.root, text="Upload first additional image:").pack()
-        tk.Entry(self.root, textvariable=self.image1_path_var, state='readonly').pack()
-        tk.Button(self.root, text="Browse", command=lambda: self.select_image_file(self.image1_path_var)).pack()
-
         self.image2_path_var = tk.StringVar()
-        tk.Label(self.root, text="Upload second additional image:").pack()
+        tk.Label(self.root, text="Upload second image:").pack()
         tk.Entry(self.root, textvariable=self.image2_path_var, state='readonly').pack()
-        tk.Button(self.root, text="Browse", command=lambda: self.select_image_file(self.image2_path_var)).pack()
+        tk.Button(self.root, text="Browse", command=lambda: self.select_file(self.image2_path_var)).pack()
 
-        # Input field for timeframe
-        tk.Label(self.root, text="Set timeframe (in seconds):").pack()
-        self.timeframe_var = tk.StringVar()
-        tk.Entry(self.root, textvariable=self.timeframe_var).pack()
+        self.image3_path_var = tk.StringVar()
+        tk.Label(self.root, text="Upload third image:").pack()
+        tk.Entry(self.root, textvariable=self.image3_path_var, state='readonly').pack()
+        tk.Button(self.root, text="Browse", command=lambda: self.select_file(self.image3_path_var)).pack()
+
+        # Input fields for image display timelines
+        tk.Label(self.root, text="Set timeline for second image (mm:ss:ms):").pack()
+        self.timeline2_var = tk.StringVar()
+        tk.Entry(self.root, textvariable=self.timeline2_var).pack()
+
+        tk.Label(self.root, text="Set timeline for third image (mm:ss:ms):").pack()
+        self.timeline3_var = tk.StringVar()
+        tk.Entry(self.root, textvariable=self.timeline3_var).pack()
 
         # Submit button
         tk.Button(self.root, text="Submit", command=self.save_video_settings).pack()
+
+    def show_video_duration(self, duration):
+        duration_label = tk.Label(self.root, text=f"Video Duration: {duration:.2f} seconds")
+        duration_label.pack()
+
+    def select_file(self, path_var):
+        file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
+        path_var.set(file_path)
 
     def select_video_file(self):
         file_path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4;*.avi;*.mov")])
@@ -394,14 +446,6 @@ class DatabaseApp:
                 self.show_video_duration(video_duration)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load video: {str(e)}")
-
-    def show_video_duration(self, duration):
-        duration_label = tk.Label(self.root, text=f"Video Duration: {duration:.2f} seconds")
-        duration_label.pack()
-
-    def select_image_file(self, path_var):
-        file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
-        path_var.set(file_path)
 
     def select_export_directory(self):
         # Open directory dialog to select an export directory
