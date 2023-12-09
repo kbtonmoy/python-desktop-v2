@@ -245,7 +245,8 @@ class DatabaseApp:
     def process_video(self, screenshot_path, video_path, output_path, temp_folder, image2_path, image3_path, timeline2, timeline3):
         def convert_to_seconds(timeline):
             mm, ss, ms = map(int, timeline.split(':'))
-            return mm * 60 + ss + ms / 1000
+            converted_time = mm * 60 + ss + ms / 1000
+            return converted_time
 
         # Convert timelines for additional images
         timeline2_seconds = convert_to_seconds(timeline2)
@@ -256,17 +257,15 @@ class DatabaseApp:
         screenshot2 = cv2.imread(image2_path)
         screenshot3 = cv2.imread(image3_path)
 
-        # Initialize a class attribute to track the elapsed time
-        self.current_time = 0
+        facecam_video = VideoFileClip(video_path)
 
-        def process_frame(frame):
-            # Update the current time
-            self.current_time += 1.0 / facecam_video.fps
+        def process_frame(frame, current_time=[0]):
+            # Increment current time for this frame
+            current_time[0] += 1 / facecam_video.fps
 
-            # Determine which screenshot to use based on the current time
-            if self.current_time < timeline2_seconds:
+            if current_time[0] < timeline2_seconds:
                 current_screenshot = screenshot1
-            elif self.current_time < timeline3_seconds:
+            elif current_time[0] < timeline3_seconds:
                 current_screenshot = screenshot2
             else:
                 current_screenshot = screenshot3
@@ -290,10 +289,11 @@ class DatabaseApp:
 
             # Wrapper function to track time
 
-        facecam_video = VideoFileClip(video_path)
 
         # Apply the process_frame function to each frame of the video
         processed_video = facecam_video.fl_image(process_frame)
+        # Reset the current_time for potential reusability
+        self.current_time = 0
         # Use user-selected export directory
         output_dir = self.export_dir if self.export_dir else 'videos'
         if not os.path.exists(output_dir):
