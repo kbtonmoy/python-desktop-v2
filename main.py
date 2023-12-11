@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog, messagebox
 import mysql.connector
+from dotenv import load_dotenv
 from mysql.connector import Error
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -86,14 +87,11 @@ class DatabaseApp:
 
 # ALl logical Functions are here
     def connect_to_database(self):
-        # host = self.host_entry.get()
-        # user = self.user_entry.get()
-        # password = self.password_entry.get()
-        # database = self.database_entry.get()
-        host = "localhost"
-        user = "kbtonmoy"
-        password = "6677"
-        database = "forclient"
+        load_dotenv()
+        host = os.getenv("HOST")
+        user = os.getenv("USER")
+        password = os.getenv("PASSWORD")
+        database = os.getenv("DATABASE")
 
         try:
             self.connection = mysql.connector.connect(host=host, user=user, password=password, database=database)
@@ -228,7 +226,8 @@ class DatabaseApp:
             with open("video_title.txt", "r") as title_file:
                 title_template = title_file.read()
             # Fetch dynamic data from ecom_platform1
-            dynamic_data = self.get_dynamic_data(root_domain, cursor)
+            table_name = self.table_var.get()
+            dynamic_data = self.get_dynamic_data(table_name, root_domain, cursor)
 
             # Format the description
             video_description = self.format_description(description_template, dynamic_data)
@@ -389,6 +388,12 @@ class DatabaseApp:
     def open_video_preparation_frame(self):
         # New window (or frame) for video preparation settings
         self.clear_all_widgets()
+        # Dropdown for table selection
+        tk.Label(self.root, text="Select a table:").pack()
+        self.table_var = tk.StringVar()
+        tables = self.get_tables()
+        table_dropdown = tk.OptionMenu(self.root, self.table_var, *tables)
+        table_dropdown.pack()
 
         # Input field for video file
         tk.Label(self.root, text="Select a video file:").pack()
@@ -462,9 +467,13 @@ class DatabaseApp:
         # Call the function to start processing videos
         self.prepare_videos_frame()
 
+    def get_tables(self):
+        cursor = self.connection.cursor()
+        cursor.execute("SHOW TABLES")
+        return [table[0] for table in cursor.fetchall()]
 
-    def get_dynamic_data(self, root_domain, cursor):
-        query = "SELECT * FROM ecom_platform1 WHERE root_domain = %s"
+    def get_dynamic_data(self, table_name, root_domain, cursor):
+        query = f"SELECT * FROM {table_name} WHERE root_domain = %s"
         cursor.execute(query, (root_domain,))
         result = cursor.fetchone()
         if result:
