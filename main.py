@@ -73,16 +73,16 @@ class DatabaseApp:
 
     def create_option_buttons(self):
         # New method to create buttons for "Take Screenshots", "Prepare Videos", "Upload on YouTube"
-        tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack()
-        tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack()
-        tk.Button(self.root, text="Upload on YouTube", command=self.process_and_upload_videos).pack()
+        tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Upload on YouTube", command=self.process_and_upload_videos).pack(padx=10, pady=10)
 
     def create_screenshot_button(self):
         self.screenshot_button = tk.Button(self.root, text="Start Capturing", command=self.take_screenshots)
         self.screenshot_button.pack(pady=10)
 
     def create_upload_csv_button(self):
-        tk.Button(self.root, text="Upload CSV", command=self.upload_csv).pack()
+        tk.Button(self.root, text="Upload CSV", command=self.upload_csv).pack(pady=5)
 
 
 # ALl logical Functions are here
@@ -121,10 +121,10 @@ class DatabaseApp:
 
     def start_screenshot_process(self, urls):
         self.render_label = tk.Label(self.root, text="Screenshot taking in progress...")
-        self.render_label.pack()
+        self.render_label.pack(pady=5)
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(self.root, variable=self.progress_var, maximum=len(urls))
-        self.progress_bar.pack()
+        self.progress_bar.pack(pady=5)
 
         self.queue = queue.Queue()
         for url in urls:
@@ -205,9 +205,9 @@ class DatabaseApp:
     # Video Generation Logics are here
     def initialize_video_render_progress_bar(self):
         self.render_label = tk.Label(self.root, text="Rendering in progress...")
-        self.render_label.pack()
+        self.render_label.pack(pady=5)
         self.progress = ttk.Progressbar(self.root, orient="horizontal", length=300, mode='determinate')
-        self.progress.pack()
+        self.progress.pack(pady=5)
 
 
     def destroy_video_render_progress_bar(self):
@@ -389,50 +389,50 @@ class DatabaseApp:
         # New window (or frame) for video preparation settings
         self.clear_all_widgets()
         # Dropdown for table selection
-        tk.Label(self.root, text="Select a table:").pack()
+        tk.Label(self.root, text="Select a table:").pack(pady=5)
         self.table_var = tk.StringVar()
         tables = self.get_tables()
         table_dropdown = tk.OptionMenu(self.root, self.table_var, *tables)
-        table_dropdown.pack()
+        table_dropdown.pack(pady=5)
 
         # Input field for video file
-        tk.Label(self.root, text="Select a video file:").pack()
+        tk.Label(self.root, text="Select a video file:").pack(pady=5)
         self.video_path_var = tk.StringVar()
-        tk.Entry(self.root, textvariable=self.video_path_var, state='readonly').pack()
-        tk.Button(self.root, text="Browse", command=self.select_video_file).pack()
+        tk.Entry(self.root, textvariable=self.video_path_var, state='readonly').pack(pady=5)
+        tk.Button(self.root, text="Browse", command=self.select_video_file).pack(pady=5)
 
         # Input field for export directory
-        tk.Label(self.root, text="Select export directory:").pack()
+        tk.Label(self.root, text="Select export directory:").pack(pady=5)
         self.export_dir_var = tk.StringVar()
-        tk.Entry(self.root, textvariable=self.export_dir_var, state='readonly').pack()
-        tk.Button(self.root, text="Browse", command=self.select_export_directory).pack()
+        tk.Entry(self.root, textvariable=self.export_dir_var, state='readonly').pack(pady=5)
+        tk.Button(self.root, text="Browse", command=self.select_export_directory).pack(pady=5)
 
         # Input fields for additional images
         self.image2_path_var = tk.StringVar()
-        tk.Label(self.root, text="Upload second image:").pack()
-        tk.Entry(self.root, textvariable=self.image2_path_var, state='readonly').pack()
-        tk.Button(self.root, text="Browse", command=lambda: self.select_file(self.image2_path_var)).pack()
+        tk.Label(self.root, text="Upload second image:").pack(pady=5)
+        tk.Entry(self.root, textvariable=self.image2_path_var, state='readonly').pack(pady=5)
+        tk.Button(self.root, text="Browse", command=lambda: self.select_file(self.image2_path_var)).pack(pady=5)
 
         self.image3_path_var = tk.StringVar()
-        tk.Label(self.root, text="Upload third image:").pack()
-        tk.Entry(self.root, textvariable=self.image3_path_var, state='readonly').pack()
-        tk.Button(self.root, text="Browse", command=lambda: self.select_file(self.image3_path_var)).pack()
+        tk.Label(self.root, text="Upload third image:").pack(pady=5)
+        tk.Entry(self.root, textvariable=self.image3_path_var, state='readonly').pack(pady=5)
+        tk.Button(self.root, text="Browse", command=lambda: self.select_file(self.image3_path_var)).pack(pady=5)
 
         # Input fields for image display timelines
-        tk.Label(self.root, text="Set timeline for second image (mm:ss:ms):").pack()
+        tk.Label(self.root, text="Set timeline for second image (mm:ss:ms):").pack(pady=5)
         self.timeline2_var = tk.StringVar()
-        tk.Entry(self.root, textvariable=self.timeline2_var).pack()
+        tk.Entry(self.root, textvariable=self.timeline2_var).pack(pady=5)
 
-        tk.Label(self.root, text="Set timeline for third image (mm:ss:ms):").pack()
+        tk.Label(self.root, text="Set timeline for third image (mm:ss:ms):").pack(pady=5)
         self.timeline3_var = tk.StringVar()
-        tk.Entry(self.root, textvariable=self.timeline3_var).pack()
+        tk.Entry(self.root, textvariable=self.timeline3_var).pack(pady=5)
 
         # Submit button
-        tk.Button(self.root, text="Submit", command=self.save_video_settings).pack()
+        tk.Button(self.root, text="Submit", command=self.save_video_settings).pack(pady=5)
 
     def show_video_duration(self, duration):
         duration_label = tk.Label(self.root, text=f"Video Duration: {duration:.2f} seconds")
-        duration_label.pack()
+        duration_label.pack(pady=5)
 
     def select_file(self, path_var):
         file_path = filedialog.askopenfilename(filetypes=[("Image files", "*.jpg;*.jpeg;*.png")])
