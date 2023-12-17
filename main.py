@@ -13,16 +13,12 @@ import csv
 import queue
 import cv2
 from moviepy.editor import VideoFileClip
-from moviepy.config import change_settings
-from threading import Thread
+from threading import Thread, Semaphore
 import os
-import google_auth_oauthlib.flow
-import googleapiclient.discovery
-import googleapiclient.errors
-from googleapiclient.http import MediaFileUpload
-from video import upload_yt_video
+import requests
+from concurrent.futures import ThreadPoolExecutor
 
-
+load_dotenv()
 class DatabaseApp:
     def __init__(self, root):
         self.root = root
@@ -75,7 +71,7 @@ class DatabaseApp:
         # New method to create buttons for "Take Screenshots", "Prepare Videos", "Upload on YouTube"
         tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack(padx=10, pady=10)
-        tk.Button(self.root, text="Upload on YouTube", command=self.process_and_upload_videos).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Upload on Video Server", command=self.process_and_upload_videos).pack(padx=10, pady=10)
 
     def create_screenshot_button(self):
         self.screenshot_button = tk.Button(self.root, text="Start Capturing", command=self.take_screenshots)
@@ -87,7 +83,6 @@ class DatabaseApp:
 
 # ALl logical Functions are here
     def connect_to_database(self):
-        load_dotenv()
         host = os.getenv("HOST")
         user = os.getenv("USER")
         password = os.getenv("PASSWORD")
@@ -494,29 +489,101 @@ class DatabaseApp:
     # Youtube Video Uploading Logics are here
 
     def fetch_video_records(self):
-        query = "SELECT root_domain, location, yt_video_description, yt_video_title  FROM url_videos"
+        query = "SELECT root_domain, location, yt_video_description, yt_video_title FROM url_videos WHERE youtube_link IS NULL"
         cursor = self.connection.cursor()
         cursor.execute(query)
         return cursor.fetchall()  # Returns a list of tuples (location, yt_video_description)
 
-    def process_and_upload_videos(self):
-        records = self.fetch_video_records()
-        for root_domain, location, description, title in records:
+    def upload_video_thread(self, semaphore, record, progress_queue):
+        with semaphore:
+            root_domain, location, description, title = record
             try:
-                video_id = upload_yt_video(file=location, title=title, description=description, category="22", keywords="",
-                                privacyStatus="unlisted")
-                youtube_link = f"https://www.youtube.com/watch?v={video_id}"
-                print(video_id)
+                print("Uploading...")
+                auth = (os.getenv("video_server_username"), os.getenv("video_server_password"))
+                base_url = os.getenv("video_server_base_url")
+                upload_url = f"{base_url}/api/v1/media"
 
-                self.update_youtube_link_in_db(root_domain, youtube_link)
+                with open(location, 'rb') as media_file:
+                    response = requests.post(
+                        url=upload_url,
+                        files={'media_file': media_file},
+                        data={'title': title, 'description': description},
+                        auth=auth
+                    )
+
+                if response.status_code == 201:
+                    response_data = response.json()
+                    live_url = response_data.get('url')
+                    thumbnail_url = response_data.get('thumbnail_url')
+
+                    thumbnail_location = None
+                    if thumbnail_url:
+                        thumbnail_location = self.download_thumbnail(thumbnail_url, root_domain)
+
+                    self.update_youtube_link_in_db(root_domain, live_url, thumbnail_location)
+                    # os.remove(location)
+                else:
+                    print(f"Error during upload. Status code: {response.status_code}, Details: {response.text}")
+
             except Exception as e:
                 print(f"Failed to upload {title}. Error: {str(e)}")
 
-    def update_youtube_link_in_db(self, root_domain, youtube_link):
+            finally:
+                progress_queue.put(None)  # Signal completion
+
+    def process_and_upload_videos(self):
+        records = self.fetch_video_records()
+        if not records:
+            messagebox.showinfo("Info", "No videos to upload.")
+            return
+
+        if not messagebox.askyesno("Confirmation", f"{len(records)} videos will be uploaded. Do you wish to continue?"):
+            print("Upload canceled.")
+            return
+
+        self.progress_bar = ttk.Progressbar(self.root, orient=tk.HORIZONTAL, length=300, mode='determinate')
+        self.progress_bar.pack(pady=20)
+        self.completed_threads = 0
+        semaphore = Semaphore(4)
+        progress_queue = queue.Queue()
+
+        def update_progress():
+            while not progress_queue.empty():
+                progress_queue.get()
+                self.completed_threads += 1
+                self.progress_bar['value'] = 100 * self.completed_threads / len(records)
+
+            if self.completed_threads == len(records):
+                self.progress_bar.pack_forget()  # Remove progress bar
+                messagebox.showinfo("Success", "All videos uploaded successfully.")
+                self.on_all_threads_complete()
+            else:
+                self.root.after(100, update_progress)  # Schedule the next check
+
+        threads = [Thread(target=self.upload_video_thread, args=(semaphore, record, progress_queue)) for record in records]
+
+        for thread in threads:
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+
+        update_progress()
+
+    def download_thumbnail(self, thumbnail_url, root_domain):
+        response = requests.get(thumbnail_url)
+        if response.status_code == 200:
+            os.makedirs('thumbnails', exist_ok=True)
+            thumbnail_filename = f"thumbnails/{root_domain}.jpg"
+            with open(thumbnail_filename, 'wb') as f:
+                f.write(response.content)
+            return thumbnail_filename  # Return the path of the downloaded thumbnail
+
+    def update_youtube_link_in_db(self, root_domain, youtube_link, thumbnail_location):
         cursor = self.connection.cursor()
         try:
-            update_query = "UPDATE url_videos SET youtube_link = %s WHERE root_domain = %s"
-            cursor.execute(update_query, (youtube_link, root_domain))
+            update_query = "UPDATE url_videos SET youtube_link = %s, thumbnail_location = %s WHERE root_domain = %s"
+            cursor.execute(update_query, (youtube_link, thumbnail_location, root_domain))
             self.connection.commit()
         except Exception as e:
             print(f"Error updating database: {e}")
