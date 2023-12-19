@@ -16,7 +16,6 @@ from moviepy.editor import VideoFileClip
 from threading import Thread, Semaphore
 import os
 import requests
-from concurrent.futures import ThreadPoolExecutor
 
 load_dotenv()
 class DatabaseApp:
@@ -514,14 +513,13 @@ class DatabaseApp:
                 if response.status_code == 201:
                     response_data = response.json()
                     live_url = response_data.get('url')
-                    thumbnail_url = response_data.get('thumbnail_url')
 
-                    thumbnail_location = None
-                    if thumbnail_url:
-                        thumbnail_location = self.download_thumbnail(thumbnail_url, root_domain)
+                    # Use the new function to extract the first frame of the video as a thumbnail
+                    thumbnail_location = self.extract_thumbnail(location, root_domain)
 
                     self.update_youtube_link_in_db(root_domain, live_url, thumbnail_location)
-                    # os.remove(location)
+                    # Consider uncommenting the next line to remove the video file after successful upload
+                    os.remove(location)
                 else:
                     print(f"Error during upload. Status code: {response.status_code}, Details: {response.text}")
 
@@ -532,7 +530,13 @@ class DatabaseApp:
                 progress_queue.put(None)  # Signal completion
 
     def process_and_upload_videos(self):
+        self.connection.close()
+        self.connection = mysql.connector.connect(host=self.host, user=self.user, password=self.password,
+                                                  database=self.database)
+
+        # Now fetch the video records with the refreshed connection
         records = self.fetch_video_records()
+
         if not records:
             messagebox.showinfo("Info", "No videos to upload.")
             return
@@ -570,14 +574,23 @@ class DatabaseApp:
 
         update_progress()
 
-    def download_thumbnail(self, thumbnail_url, root_domain):
-        response = requests.get(thumbnail_url)
-        if response.status_code == 200:
+    def extract_thumbnail(self, video_path, root_domain):
+        # Open the video file
+        cap = cv2.VideoCapture(video_path)
+        success, image = cap.read()
+        cap.release()
+
+        if success:
+            # Ensure 'thumbnails' directory exists
             os.makedirs('thumbnails', exist_ok=True)
             thumbnail_filename = f"thumbnails/{root_domain}.jpg"
-            with open(thumbnail_filename, 'wb') as f:
-                f.write(response.content)
-            return thumbnail_filename  # Return the path of the downloaded thumbnail
+
+            # Save the first frame as a JPEG file
+            cv2.imwrite(thumbnail_filename, image)
+
+            return thumbnail_filename
+
+        return None  # Return None if unable to extract the thumbnail
 
     def update_youtube_link_in_db(self, root_domain, youtube_link, thumbnail_location):
         cursor = self.connection.cursor()
