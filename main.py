@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox
 import mysql.connector
 from dotenv import load_dotenv
 from mysql.connector import Error
+from requests.auth import HTTPBasicAuth
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException
@@ -20,6 +21,7 @@ import requests
 load_dotenv()
 class DatabaseApp:
     def __init__(self, root):
+
         self.root = root
         self.root.title("Database Connection App")
         self.connection_details = {}
@@ -71,6 +73,7 @@ class DatabaseApp:
         tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Upload on Video Server", command=self.process_and_upload_videos).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Generate WP Pages ", command=self.generate_wp_pages).pack(padx=10, pady=10)
 
     def create_screenshot_button(self):
         self.screenshot_button = tk.Button(self.root, text="Start Capturing", command=self.take_screenshots)
@@ -98,9 +101,6 @@ class DatabaseApp:
                 self.show_success_frame()
         except Error as e:
             messagebox.showerror("Error", f"Error connecting to MySQL Database: {e}")
-
-
-    # Screenshot Taking Logics are here
 
     def upload_csv(self):
         filename = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
@@ -485,7 +485,7 @@ class DatabaseApp:
         description = re.sub(r'\{([^}]+)\}', replace, template)
         return description
 
-    # Youtube Video Uploading Logics are here
+# MediaCMS Video Uploading Logics are here
 
     def fetch_video_records(self):
         query = "SELECT root_domain, location, yt_video_description, yt_video_title FROM url_videos WHERE youtube_link IS NULL"
@@ -602,6 +602,95 @@ class DatabaseApp:
             print(f"Error updating database: {e}")
         finally:
             cursor.close()
+
+
+#Generate Wp Pages Logic are here
+    def fetch_null_wp_page_record(self):
+        query = "SELECT * FROM url_videos WHERE wp_link IS NULL"
+        cursor = self.connection.cursor(dictionary=True)  # Use dictionary cursor
+        cursor.execute(query)
+        records = cursor.fetchall()
+        return records # Returns a list of tuples (location, yt_video_description)
+    def generate_wp_pages(self):
+        # Step 1: Fetch records where wp_link is null
+        records = self.fetch_null_wp_page_record()
+        total_records = len(records)
+
+        # Step 2: Prepare the progress bar
+        self.progress = ttk.Progressbar(self.root, orient="horizontal", length=300, mode="determinate")
+        self.progress.pack(padx=10, pady=10)
+        self.progress["maximum"] = total_records
+
+        # Step 3: Generate pages in bulk
+        self.bulk_generate_posts(records)
+
+    def bulk_generate_posts(self, records):
+        def update_progress_bar():
+            self.progress["value"] += 1
+            self.root.update_idletasks()
+
+        def thread_task(self, record):
+            # Create a new connection for the thread
+            local_connection = mysql.connector.connect(host=self.host, user=self.user, password=self.password,
+                                                       database=self.database)
+            local_cursor = local_connection.cursor()
+
+            try:
+                # Call the create_post method and pass the cursor
+                self.create_post(record, local_cursor)
+                # Schedule the progress bar update in the main thread
+                self.root.after(0, update_progress_bar)
+            finally:
+                # Close the cursor and connection
+                local_cursor.close()
+                local_connection.close()
+
+        # Iterate over the records and create threads
+        for i in range(0, len(records), 4):
+            threads = []
+            for record in records[i:i + 4]:
+                # Start a new thread for each record
+                thread = threading.Thread(target=thread_task, args=(self, record,))
+                thread.start()
+                threads.append(thread)
+
+            # Wait for all threads in this batch to complete
+            for thread in threads:
+                thread.join()
+
+    def create_post(self, record, cursor):
+        url = f"{os.getenv('wp_site_url')}wp-json/wp/v2/pages"
+        user = os.getenv('wp_site_username')
+        app_password = os.getenv('wp_site_application_password')
+
+        page_data = {
+            'title': record['yt_video_title'],
+            'content': record['yt_video_description'],
+            'status': 'publish'
+        }
+
+        response = requests.post(url, auth=HTTPBasicAuth(user, app_password), json=page_data)
+
+        if response.status_code == 201:
+            print("Page created successfully.")
+            new_page_link = response.json()['link']
+            self.update_wp_link_in_database(record['root_domain'],
+                                            new_page_link)  # Assuming 'root_domain' can be used as a unique identifier
+        else:
+            print(f"Failed to create page. Status code: {response}")
+
+    def update_wp_link_in_database(self, root_domain, wp_link):
+        cursor = None
+        try:
+            cursor = self.connection.cursor()
+            query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
+            cursor.execute(query, (wp_link, root_domain))
+            self.connection.commit()
+        except mysql.connector.Error as err:
+            print(f"Error: {err}")
+        finally:
+            if cursor:
+                cursor.close()
 
 # Global Functions are here
 
