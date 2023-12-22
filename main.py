@@ -1,3 +1,4 @@
+import re
 import shutil
 import threading
 import tkinter as tk
@@ -73,7 +74,7 @@ class DatabaseApp:
         tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Upload on Video Server", command=self.process_and_upload_videos).pack(padx=10, pady=10)
-        tk.Button(self.root, text="Generate WP Pages ", command=self.generate_wp_pages).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Generate WP Pages ", command=self.open_wp_page_generate_frame).pack(padx=10, pady=10)
 
     def create_screenshot_button(self):
         self.screenshot_button = tk.Button(self.root, text="Start Capturing", command=self.take_screenshots)
@@ -605,92 +606,96 @@ class DatabaseApp:
 
 
 #Generate Wp Pages Logic are here
-    def fetch_null_wp_page_record(self):
-        query = "SELECT * FROM url_videos WHERE wp_link IS NULL"
-        cursor = self.connection.cursor(dictionary=True)  # Use dictionary cursor
+
+    def open_wp_page_generate_frame(self):
+        # New window (or frame) for video preparation settings
+        self.clear_all_widgets()
+        # Dropdown for table selection
+        tk.Label(self.root, text="Select a table:").pack(pady=5)
+        self.table_var = tk.StringVar()
+        tables = self.get_tables()
+        table_dropdown = tk.OptionMenu(self.root, self.table_var, *tables)
+        table_dropdown.pack(pady=5)
+
+        # Submit button
+        tk.Button(self.root, text="Submit", command=self.generate_wp_pages).pack(pady=5)
+
+    def generate_wp_pages(self):
+        selected_table = self.table_var.get()  # Fetch the user-selected table name
+        query = "SELECT root_domain, youtube_link FROM url_videos WHERE wp_link IS NULL"
+        cursor = self.connection.cursor()
         cursor.execute(query)
         records = cursor.fetchall()
-        return records # Returns a list of tuples (location, yt_video_description)
-    def generate_wp_pages(self):
-        # Step 1: Fetch records where wp_link is null
-        records = self.fetch_null_wp_page_record()
-        total_records = len(records)
 
-        # Step 2: Prepare the progress bar
-        self.progress = ttk.Progressbar(self.root, orient="horizontal", length=300, mode="determinate")
-        self.progress.pack(padx=10, pady=10)
-        self.progress["maximum"] = total_records
+        # Check if there are no records to process
+        if not records:
+            messagebox.showinfo("No Records", "There are no records to upload.")
+            return
 
-        # Step 3: Generate pages in bulk
-        self.bulk_generate_posts(records)
+        # Confirm with the user if they wish to continue
+        if not messagebox.askyesno("Confirmation", f"{len(records)} records will be uploaded. Do you wish to continue?"):
+            messagebox.showinfo("Cancelled", "Operation cancelled by the user.")
+            return
 
-    def bulk_generate_posts(self, records):
-        def update_progress_bar():
-            self.progress["value"] += 1
-            self.root.update_idletasks()
+        for record in records:
+            root_domain, youtube_link = record
 
-        def thread_task(self, record):
-            # Create a new connection for the thread
-            local_connection = mysql.connector.connect(host=self.host, user=self.user, password=self.password,
-                                                       database=self.database)
-            local_cursor = local_connection.cursor()
+            # Fetch additional data from the user-selected table based on root_domain
 
-            try:
-                # Call the create_post method and pass the cursor
-                self.create_post(record, local_cursor)
-                # Schedule the progress bar update in the main thread
-                self.root.after(0, update_progress_bar)
-            finally:
-                # Close the cursor and connection
-                local_cursor.close()
-                local_connection.close()
+            # Fetch additional data from the user-selected table based on root_domain
+            additional_query = f"SELECT * FROM {selected_table} WHERE root_domain = %s"
+            cursor.execute(additional_query, (root_domain,))
+            additional_data_tuple = cursor.fetchone()
+            additional_data_columns = [column[0] for column in cursor.description]
+            additional_data = dict(zip(additional_data_columns, additional_data_tuple))
 
-        # Iterate over the records and create threads
-        for i in range(0, len(records), 4):
-            threads = []
-            for record in records[i:i + 4]:
-                # Start a new thread for each record
-                thread = threading.Thread(target=thread_task, args=(self, record,))
-                thread.start()
-                threads.append(thread)
+            # Modify the HTML file with the additional data and youtube_link
+            modified_html_content = self.modify_html(additional_data, youtube_link)
+            # Create WP page with the modified HTML content
+            wp_page_link = self.create_wp_page(modified_html_content)
 
-            # Wait for all threads in this batch to complete
-            for thread in threads:
-                thread.join()
+            if wp_page_link:
+                update_query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
+                cursor.execute(update_query, (wp_page_link, root_domain))
+                self.connection.commit()
 
-    def create_post(self, record, cursor):
-        url = f"{os.getenv('wp_site_url')}wp-json/wp/v2/pages"
-        user = os.getenv('wp_site_username')
-        app_password = os.getenv('wp_site_application_password')
+        cursor.close()
+        messagebox.showinfo("Success", "All records have been successfully uploaded.")
 
-        page_data = {
-            'title': record['yt_video_title'],
-            'content': record['yt_video_description'],
-            'status': 'publish'
-        }
+    def modify_html(self, data, youtube_link):
+        # Load your HTML file
+        with open("wp_template.html", "r") as file:
+            html_content = file.read()
 
-        response = requests.post(url, auth=HTTPBasicAuth(user, app_password), json=page_data)
+        # Replace placeholders in the HTML file with data from the selected table
+        for key, value in data.items():
+            placeholder = "{" + key + "}"  # Adjusted placeholder format
+            html_content = html_content.replace(placeholder, str(value))
+
+        # Additionally replace the {youtube_link} placeholder
+        html_content = html_content.replace("{youtube_link}", youtube_link)
+
+        return html_content
+
+    def create_wp_page(self, youtube_link):
+        # Load WP REST API credentials from .env file
+        wp_url = os.getenv("wp_site_url")
+        wp_user = os.getenv("wp_site_username")
+        wp_password = os.getenv("wp_site_application_password")
+
+        # Prepare request for WP REST API
+        headers = {'Content-Type': 'application/json'}
+        auth = HTTPBasicAuth(wp_user, wp_password)
+        data = {"title": "test-title", "content": youtube_link, "status": "publish"}
+
+        # Send request to WP REST API
+        response = requests.post(f"{wp_url}/wp-json/wp/v2/pages", headers=headers, auth=auth, json=data)
 
         if response.status_code == 201:
-            print("Page created successfully.")
-            new_page_link = response.json()['link']
-            self.update_wp_link_in_database(record['root_domain'],
-                                            new_page_link)  # Assuming 'root_domain' can be used as a unique identifier
+            return response.json().get("link")
         else:
-            print(f"Failed to create page. Status code: {response}")
-
-    def update_wp_link_in_database(self, root_domain, wp_link):
-        cursor = None
-        try:
-            cursor = self.connection.cursor()
-            query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
-            cursor.execute(query, (wp_link, root_domain))
-            self.connection.commit()
-        except mysql.connector.Error as err:
-            print(f"Error: {err}")
-        finally:
-            if cursor:
-                cursor.close()
+            print(f"Failed to create WP page for {youtube_link}: {response.status_code}")
+            return None
 
 # Global Functions are here
 
