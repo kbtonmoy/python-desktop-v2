@@ -29,6 +29,7 @@ class DatabaseApp:
         self.connection = None  # Database connection instance variable
         self.create_connection_frame()
         self.completed_threads = 0
+        self.thread_semaphore = Semaphore(4)
 
 # All Frames are here
 
@@ -108,11 +109,35 @@ class DatabaseApp:
         if filename:
             self.process_csv(filename)
 
+    def check_duplicates_in_database(self, urls):
+        cursor = self.connection.cursor()
+        query = "SELECT root_domain FROM url_screenshots WHERE root_domain IN (%s)"
+        format_strings = ','.join(['%s'] * len(urls))
+        cursor.execute(query % format_strings, tuple(urls))
+        result = cursor.fetchall()
+        cursor.close()
+        return [item[0] for item in result]
+
     def process_csv(self, filename):
         with open(filename, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
             urls = [row['url'] for row in reader]
-            self.start_screenshot_process(urls)
+
+        # Check for duplicates in the database
+        duplicates = self.check_duplicates_in_database(urls)
+        num_duplicates = len(duplicates)
+        if num_duplicates > 0:
+            # Ask user to remove duplicates
+            response = messagebox.askyesno(
+                "Remove Duplicates",
+                f"{num_duplicates} duplicate{'s' if num_duplicates > 1 else ''} found in the database. Remove them from the process?"
+            )
+            if response:
+                # Remove duplicates
+                urls = list(set(urls) - set(duplicates))
+
+        # Continue with the process
+        self.start_screenshot_process(urls)
 
     def start_screenshot_process(self, urls):
         self.render_label = tk.Label(self.root, text="Screenshot taking in progress...")
@@ -123,6 +148,7 @@ class DatabaseApp:
 
         self.queue = queue.Queue()
         for url in urls:
+            self.thread_semaphore.acquire()  # Acquire a semaphore slot before starting the thread
             thread = Thread(target=self.take_screenshots, args=(url, self.queue))
             thread.start()
 
@@ -132,12 +158,14 @@ class DatabaseApp:
         try:
             while True:
                 message = self.queue.get_nowait()
-                if message == "done":
-                    self.progress_var.set(self.progress_var.get() + 1)
+                if message == "progress":
+                    current_progress = self.progress_var.get()
+                    self.progress_var.set(current_progress + 1)
         except queue.Empty:
             pass
 
-        if self.progress_var.get() == self.progress_bar['maximum']:
+        total_tasks = self.progress_bar['maximum']
+        if self.progress_var.get() >= total_tasks:
             self.progress_bar.destroy()
             messagebox.showinfo("Info", "Screenshots taken for all URLs and database updated")
             self.clear_all_widgets()
@@ -146,46 +174,54 @@ class DatabaseApp:
             self.root.after(100, self.check_queue)
 
     def take_screenshots(self, url, queue):
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--ignore-certificate-errors")
-        chrome_options.add_argument("--start-maximized")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--hide-scrollbars")
-        driver = webdriver.Chrome(options=chrome_options)
-        driver.set_page_load_timeout(10)  # Setting a timeout for page load
+        try:
+            # Set up Chrome options for headless browsing
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--ignore-certificate-errors")
+            chrome_options.add_argument("--start-maximized")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--hide-scrollbars")
 
-        os.makedirs('screenshots', exist_ok=True)
+            # Initialize the Chrome WebDriver
+            driver = webdriver.Chrome(options=chrome_options)
+            driver.set_page_load_timeout(10)  # Setting a timeout for page load
 
-        # Function to attempt to load the URL and take a screenshot
-        def attempt_load_and_capture(url_with_protocol):
-            try:
-                driver.get(url_with_protocol)
-                driver.implicitly_wait(5)  # Adjust the timeout as needed
-                screenshot_filename = f"{url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')}.png"
-                screenshot_path = os.path.join('screenshots', screenshot_filename)
-                driver.save_screenshot(screenshot_path)
-                self.update_database(url, screenshot_path)
-                return True
-            except TimeoutException:
-                print(f"Timeout while accessing {url_with_protocol}")
-                return False  # Indicates a timeout occurred
-            except Exception as e:
-                print(f"Error taking screenshot of {url_with_protocol}: {e}")
-                return False
+            # Ensure the screenshots directory exists
+            os.makedirs('screenshots', exist_ok=True)
 
-        url_attempted = False
-        if not url.startswith(('http://', 'https://')):
-            # Try with https:// first, then https://www., and finally http://
-            for prefix in ['https://', 'https://www.', 'http://']:
-                if attempt_load_and_capture(prefix + url):
-                    url_attempted = True
-                    break  # Exit if successful
+            # Function to attempt to load the URL and take a screenshot
+            def attempt_load_and_capture(url_with_protocol):
+                try:
+                    driver.get(url_with_protocol)
+                    driver.implicitly_wait(5)  # Adjust the timeout as needed
+                    screenshot_filename = f"{url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')}.png"
+                    screenshot_path = os.path.join('screenshots', screenshot_filename)
+                    driver.save_screenshot(screenshot_path)
+                    self.update_database(url, screenshot_path)
+                    return True
+                except TimeoutException:
+                    print(f"Timeout while accessing {url_with_protocol}")
+                    return False  # Indicates a timeout occurred
+                except Exception as e:
+                    print(f"Error taking screenshot of {url_with_protocol}: {e}")
+                    return False
 
-        # Ensure the queue.put("done") is executed regardless of the outcome
-        self.queue.put("done")  # Moved outside the if block
+            # Try loading and capturing the URL
+            url_attempted = False
+            if not url.startswith(('http://', 'https://')):
+                # Try with various URL prefixes
+                for prefix in ['https://', 'https://www.', 'http://']:
+                    if attempt_load_and_capture(prefix + url):
+                        url_attempted = True
+                        break  # Exit if successful
 
-        driver.quit()
+
+        finally:
+            # Put a 'progress' message in the queue when a screenshot task is completed
+            self.queue.put("progress")
+            self.thread_semaphore.release()
+            driver.quit()
 
     def update_database(self, url, screenshot_path):
         try:
