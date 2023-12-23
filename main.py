@@ -621,46 +621,71 @@ class DatabaseApp:
         tk.Button(self.root, text="Submit", command=self.generate_wp_pages).pack(pady=5)
 
     def generate_wp_pages(self):
-        selected_table = self.table_var.get()  # Fetch the user-selected table name
+        selected_table = self.table_var.get()
         query = "SELECT root_domain, youtube_link FROM url_videos WHERE wp_link IS NULL"
         cursor = self.connection.cursor()
         cursor.execute(query)
         records = cursor.fetchall()
 
-        # Check if there are no records to process
         if not records:
             messagebox.showinfo("No Records", "There are no records to upload.")
             return
 
-        # Confirm with the user if they wish to continue
-        if not messagebox.askyesno("Confirmation", f"{len(records)} records will be uploaded. Do you wish to continue?"):
+        if not messagebox.askyesno("Confirmation",
+                                   f"{len(records)} records will be uploaded. Do you wish to continue?"):
             messagebox.showinfo("Cancelled", "Operation cancelled by the user.")
             return
 
+        # Create a Semaphore with a maximum of 4 threads
+        semaphore = Semaphore(4)
+        threads = []
+
         for record in records:
-            root_domain, youtube_link = record
+            thread = threading.Thread(target=self.threaded_record_processing, args=(record, selected_table, semaphore))
+            thread.start()
+            threads.append(thread)
 
-            # Fetch additional data from the user-selected table based on root_domain
-
-            # Fetch additional data from the user-selected table based on root_domain
-            additional_query = f"SELECT * FROM {selected_table} WHERE root_domain = %s"
-            cursor.execute(additional_query, (root_domain,))
-            additional_data_tuple = cursor.fetchone()
-            additional_data_columns = [column[0] for column in cursor.description]
-            additional_data = dict(zip(additional_data_columns, additional_data_tuple))
-
-            # Modify the HTML file with the additional data and youtube_link
-            modified_html_content = self.modify_html(additional_data, youtube_link)
-            # Create WP page with the modified HTML content
-            wp_page_link = self.create_wp_page(modified_html_content)
-
-            if wp_page_link:
-                update_query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
-                cursor.execute(update_query, (wp_page_link, root_domain))
-                self.connection.commit()
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
 
         cursor.close()
         messagebox.showinfo("Success", "All records have been successfully uploaded.")
+
+    def create_new_connection(self):
+        try:
+            return mysql.connector.connect(host=self.host, database=self.database,
+                                           user=self.user, password=self.password)
+        except Error as e:
+            print(f"Error while connecting to MySQL: {e}")
+            return None
+
+    def threaded_record_processing(self, record, selected_table, semaphore):
+        with semaphore:
+            try:
+                # Establish a new connection for each thread
+                connection = self.create_new_connection()  # Replace with your connection method
+                cursor = connection.cursor()
+
+                root_domain, youtube_link = record
+                additional_query = f"SELECT * FROM {selected_table} WHERE root_domain = %s"
+                cursor.execute(additional_query, (root_domain,))
+                additional_data_tuple = cursor.fetchone()
+                additional_data_columns = [column[0] for column in cursor.description]
+                additional_data = dict(zip(additional_data_columns, additional_data_tuple))
+
+                modified_html_content = self.modify_html(additional_data, youtube_link)
+                wp_page_link = self.create_wp_page(modified_html_content)
+
+                if wp_page_link:
+                    update_query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
+                    cursor.execute(update_query, (wp_page_link, root_domain))
+                    connection.commit()
+
+                cursor.close()
+                connection.close()
+            except Exception as e:
+                print(f"Error processing record {record}: {e}")
 
     def modify_html(self, data, youtube_link):
         # Load your HTML file
@@ -679,6 +704,7 @@ class DatabaseApp:
 
     def create_wp_page(self, youtube_link):
         # Load WP REST API credentials from .env file
+        print('Gerenrating page in  Wordpress...')
         wp_url = os.getenv("wp_site_url")
         wp_user = os.getenv("wp_site_username")
         wp_password = os.getenv("wp_site_application_password")
