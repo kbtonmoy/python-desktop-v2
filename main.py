@@ -29,6 +29,9 @@ class DatabaseApp:
         self.connection = None  # Database connection instance variable
         self.create_connection_frame()
         self.completed_threads = 0
+        self.total_chunks = 0
+        self.completed_chunks = 0
+        self.current_chunk_index = -1
         self.thread_semaphore = Semaphore(4)
 
 # All Frames are here
@@ -55,10 +58,6 @@ class DatabaseApp:
 
         tk.Button(self.connection_frame, text="Connect", command=self.connect_to_database).grid(row=4, columnspan=2,
                                                                                                 pady=10)
-
-    def upload_youtube_frame(self):
-        # Placeholder method for "Upload on YouTube" functionality
-        messagebox.showinfo("Info", "Upload on YouTube functionality not implemented yet")
 
     def show_success_frame(self):
         self.create_option_buttons()
@@ -119,27 +118,29 @@ class DatabaseApp:
         return [item[0] for item in result]
 
     def process_csv(self, filename):
+        chunk_size = 500  # Set the chunk size
         with open(filename, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
-            urls = [row['url'] for row in reader]
+            chunk = []
+            self.total_chunks = 0
+            self.completed_chunks = 0
+            for row in reader:
+                chunk.append(row['url'])
+                if len(chunk) == chunk_size:
+                    self.process_chunk(chunk)
+                    chunk = []
+                    self.total_chunks += 1
+            if chunk:
+                self.process_chunk(chunk)
+                self.total_chunks += 1
 
-        # Check for duplicates in the database
+    def process_chunk(self, urls):
         duplicates = self.check_duplicates_in_database(urls)
-        num_duplicates = len(duplicates)
-        if num_duplicates > 0:
-            # Ask user to remove duplicates
-            response = messagebox.askyesno(
-                "Remove Duplicates",
-                f"{num_duplicates} duplicate{'s' if num_duplicates > 1 else ''} found in the database. Remove them from the process?"
-            )
-            if response:
-                # Remove duplicates
-                urls = list(set(urls) - set(duplicates))
-
-        # Continue with the process
+        urls = list(set(urls) - set(duplicates))
         self.start_screenshot_process(urls)
 
     def start_screenshot_process(self, urls):
+        self.current_chunk_index += 1
         self.render_label = tk.Label(self.root, text="Screenshot taking in progress...")
         self.render_label.pack(pady=5)
         self.progress_var = tk.DoubleVar()
@@ -148,7 +149,7 @@ class DatabaseApp:
 
         self.queue = queue.Queue()
         for url in urls:
-            self.thread_semaphore.acquire()  # Acquire a semaphore slot before starting the thread
+            self.thread_semaphore.acquire()
             thread = Thread(target=self.take_screenshots, args=(url, self.queue))
             thread.start()
 
@@ -159,17 +160,20 @@ class DatabaseApp:
             while True:
                 message = self.queue.get_nowait()
                 if message == "progress":
-                    current_progress = self.progress_var.get()
-                    self.progress_var.set(current_progress + 1)
+                    self.progress_var.set(self.progress_var.get() + 1)
         except queue.Empty:
             pass
 
-        total_tasks = self.progress_bar['maximum']
-        if self.progress_var.get() >= total_tasks:
+        if self.progress_var.get() >= self.progress_bar['maximum']:
+            self.completed_chunks += 1
             self.progress_bar.destroy()
-            messagebox.showinfo("Info", "Screenshots taken for all URLs and database updated")
-            self.clear_all_widgets()
-            self.create_option_buttons()
+            self.render_label.destroy()
+            if self.completed_chunks == self.total_chunks:
+                messagebox.showinfo("Info", "Screenshots taken for all URLs in all chunks and database updated")
+                self.clear_all_widgets()
+                self.create_option_buttons()
+            else:
+                self.root.after(100, self.check_queue)
         else:
             self.root.after(100, self.check_queue)
 
