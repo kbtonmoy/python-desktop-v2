@@ -18,6 +18,7 @@ from moviepy.editor import VideoFileClip
 from threading import Thread, Semaphore
 import os
 import requests
+import traceback
 
 load_dotenv()
 class DatabaseApp:
@@ -106,9 +107,13 @@ class DatabaseApp:
             messagebox.showerror("Error", f"Error connecting to MySQL Database: {e}")
 
     def upload_csv(self):
-        filename = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
-        if filename:
-            self.process_csv(filename)
+        try:
+            filename = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+            if filename:
+                self.process_csv(filename)
+        except Exception as e:
+            print(f"Exception in upload_csv: {e}")
+            traceback.print_exc()  # Print the full stack trace
 
     def check_duplicates_in_database(self, urls):
         cursor = self.connection.cursor()
@@ -120,6 +125,10 @@ class DatabaseApp:
         return [item[0] for item in result]
 
     def process_csv(self, filename):
+        # Initialize the process label here
+        self.render_label = tk.Label(self.root, text="Screenshot taking process is running. Please hold tight.")
+        self.render_label.pack(pady=5)
+
         chunk_size = 500  # Set the chunk size
         with open(filename, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
@@ -144,9 +153,6 @@ class DatabaseApp:
 
     def start_screenshot_process(self, urls):
         self.current_chunk_index += 1
-        self.render_label = tk.Label(self.root, text="Screenshot taking process is running. Please hold tight.")
-        self.render_label.pack(pady=5)
-
         # Reset the completed threads for this batch of URLs
         self.completed_threads = 0
         self.total_chunks = len(urls)  # Assuming each URL is treated as a chunk here
@@ -167,97 +173,114 @@ class DatabaseApp:
 
     def check_queue(self):
         try:
+            # Process messages in the queue
             while True:
-                message = self.queue.get_nowait()
-                if message == "progress":
-                    self.completed_threads += 1
-        except queue.Empty:
-            pass
+                try:
+                    message = self.queue.get_nowait()
+                    if message == "progress":
+                        # Since we're updating a Tkinter variable, we use `self.root.after`
+                        self.root.after(0, lambda: setattr(self, 'completed_threads', self.completed_threads + 1))
+                except queue.Empty:
+                    break  # Break out of the loop if the queue is empty
 
-        # Schedule this method to be called again after a short delay
-        self.root.after(100, self.check_queue)
+            # Check if all threads have completed their work
+            if self.completed_threads >= self.total_chunks:
+                # Update GUI to indicate completion
+                # self.root.after(0, lambda: self.render_label.config(text="Screenshot taking process completed."))
+                # self.root.after(0, lambda: messagebox.showinfo("Info",
+                #                                                "Screenshots taken for all URLs and database updated"))
+                # self.root.after(0, self.clear_all_widgets)
+                # self.root.after(0, self.create_option_buttons)
+                pass
+            else:
+                # Reschedule this method to check again after a short delay
+                self.root.after(100, self.check_queue)
 
-        # Check if the processing of all chunks is completed
-        if self.completed_threads >= self.total_chunks:
-            self.render_label.config(text="Screenshot taking process completed.")
-            messagebox.showinfo("Info", "Screenshots taken for all URLs and database updated")
-            self.clear_all_widgets()
-            self.create_option_buttons()
-        # Otherwise, continue checking
+        except Exception as e:
+            print(f"Exception in check_queue: {e}")
+            traceback.print_exc()
+            # Optionally, you can handle the exception in a way that's appropriate for your application
 
     def take_screenshots(self, url, queue):
-        max_retries = 3  # Maximum number of retries for each URL
-        success = False
+        try:
+            max_retries = 3  # Maximum number of retries for each URL
+            success = False
 
-        for attempt in range(max_retries):
-            driver = None  # Initialize driver to None
-            try:
-                # Set up Chrome options for headless browsing
-                chrome_options = Options()
-                chrome_options.add_argument("--headless")
-                chrome_options.add_argument("--ignore-certificate-errors")
-                chrome_options.add_argument("--start-maximized")
-                chrome_options.add_argument("--window-size=1920,1080")
-                chrome_options.add_argument("--hide-scrollbars")
+            for attempt in range(max_retries):
+                driver = None  # Initialize driver to None
+                try:
+                    # Set up Chrome options for headless browsing
+                    chrome_options = Options()
+                    chrome_options.add_argument("--headless")
+                    chrome_options.add_argument("--ignore-certificate-errors")
+                    chrome_options.add_argument("--start-maximized")
+                    chrome_options.add_argument("--window-size=1920,1080")
+                    chrome_options.add_argument("--hide-scrollbars")
 
-                # Suppress the verbose logging
-                chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
-                chrome_options.add_argument("--log-level=3")  # This sets the logging level to SEVERE
+                    # Suppress the verbose logging
+                    chrome_options.add_experimental_option("excludeSwitches", ["enable-logging"])
+                    chrome_options.add_argument("--log-level=3")  # This sets the logging level to SEVERE
 
-                # Initialize the Chrome WebDriver
-                driver = webdriver.Chrome(options=chrome_options)
-                driver.set_page_load_timeout(10)  # Setting a timeout for page load
+                    # Initialize the Chrome WebDriver
+                    driver = webdriver.Chrome(options=chrome_options)
+                    driver.set_page_load_timeout(10)  # Setting a timeout for page load
 
-                # Ensure the screenshots directory exists
-                os.makedirs('screenshots', exist_ok=True)
+                    # Ensure the screenshots directory exists
+                    os.makedirs('screenshots', exist_ok=True)
 
-                # Function to attempt to load the URL and take a screenshot
-                def attempt_load_and_capture(url_with_protocol):
-                    try:
-                        driver.get(url_with_protocol)
-                        driver.implicitly_wait(5)  # Adjust the timeout as needed
-                        screenshot_filename = f"{url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')}.png"
-                        screenshot_path = os.path.join('screenshots', screenshot_filename)
-                        driver.save_screenshot(screenshot_path)
-                        self.update_database(url, screenshot_path)
-                        return True
-                    except TimeoutException:
-                        print(f"Timeout while accessing {url_with_protocol}")
-                        return False  # Indicates a timeout occurred
-                    except Exception as e:
-                        print(f"Error taking screenshot of {url_with_protocol}: {e}")
-                        return False
+                    # Function to attempt to load the URL and take a screenshot
+                    def attempt_load_and_capture(url_with_protocol):
+                        try:
+                            driver.get(url_with_protocol)
+                            driver.implicitly_wait(5)  # Adjust the timeout as needed
+                            screenshot_filename = f"{url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')}.png"
+                            screenshot_path = os.path.join('screenshots', screenshot_filename)
+                            driver.save_screenshot(screenshot_path)
+                            self.update_database(url, screenshot_path)
+                            return True
+                        except TimeoutException:
+                            print(f"Timeout while accessing {url_with_protocol}")
+                            return False  # Indicates a timeout occurred
+                        except Exception as e:
+                            print(f"Error taking screenshot of {url_with_protocol}: {e}")
+                            return False
 
-                # Try loading and capturing the URL
-                if not url.startswith(('http://', 'https://')):
-                    # Try with various URL prefixes
-                    for prefix in ['https://', 'https://www.', 'http://']:
-                        if attempt_load_and_capture(prefix + url):
-                            success = True
-                            break  # Exit if successful
+                    # Try loading and capturing the URL
+                    if not url.startswith(('http://', 'https://')):
+                        # Try with various URL prefixes
+                        for prefix in ['https://', 'https://www.', 'http://']:
+                            if attempt_load_and_capture(prefix + url):
+                                success = True
+                                break  # Exit if successful
 
-                if success:
-                    break  # Exit the retry loop if successful
+                    if success:
+                        break  # Exit the retry loop if successful
 
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed for {url}: {e}")
+                except Exception as e:
+                    print(f"Attempt {attempt + 1} failed for {url}: {e}")
 
-            finally:
-                if driver:
-                    driver.quit()
+                finally:
+                    if driver:
+                        driver.quit()
 
-        if not success:
-            # If all retries fail, use external API
-            success = self.take_screenshot_with_external_api(url)
+            if not success:
+                # If all retries fail, use external API
+                success = self.take_screenshot_with_external_api(url)
 
-        # Put a 'progress' message in the queue when a screenshot task is completed
-        self.queue.put("progress")
-        self.thread_semaphore.release()
+            # Put a 'progress' message in the queue when a screenshot task is completed
+            self.queue.put("progress")
+            self.thread_semaphore.release()
+
+
+        except Exception as e:
+            print(f"Exception in take_screenshots for URL {url}: {e}")
+            traceback.print_exc()
 
     def take_screenshot_with_external_api(self, url):
-        api_url = f"http://64.176.199.218:4000/api/screenshot?resX=1920&resY=1080&outFormat=jpg&waitTime=100&isFullPage=false&dismissModals=true&url=http://{url}"
+        api_url = f"http://74.50.70.82:4000/api/screenshot?resX=1920&resY=1080&outFormat=png&waitTime=100&isFullPage=false&dismissModals=true&url=http://{url}"
         sanitized_url = url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')
-        output_file = f"screenshots/{sanitized_url}.jpg"
+        screenshot_filename = f"{sanitized_url}.png"
+        output_file = os.path.join('screenshots', screenshot_filename)
 
         try:
             response = requests.get(api_url)
@@ -296,14 +319,6 @@ class DatabaseApp:
             for url in self.failed_urls.copy():
                 self.take_screenshot_with_external_api(url)
             self.failed_urls.clear()
-
-        # Check if all chunks are processed and update the UI accordingly
-        if self.completed_chunks == self.total_chunks:
-            messagebox.showinfo("Info", "Screenshots taken for all URLs in all chunks and database updated")
-            self.clear_all_widgets()
-            self.create_option_buttons()
-        else:
-            self.root.after(100, self.check_queue)
 
     def update_database(self, url, screenshot_path):
         try:
