@@ -1,4 +1,3 @@
-import re
 import shutil
 import threading
 import tkinter as tk
@@ -10,10 +9,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from mysql.connector import Error
 from requests.auth import HTTPBasicAuth
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException
-import csv
 import queue
 import cv2
 from moviepy.editor import VideoFileClip
@@ -31,11 +26,6 @@ class DatabaseApp:
         self.connection = None  # Database connection instance variable
         self.create_connection_frame()
         self.completed_threads = 0
-        self.total_chunks = 0
-        self.completed_chunks = 0
-        self.current_chunk_index = -1
-        self.thread_semaphore = Semaphore(4)
-        self.failed_urls = []
         self.queue = queue.Queue()
 
 
@@ -102,24 +92,31 @@ class DatabaseApp:
     def upload_and_process_csv(self, chunk_size=1000, batch_size=100):
         filepath = filedialog.askopenfilename()
         if filepath:
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                futures = []
-                all_urls = set()
-                for chunk in pd.read_csv(filepath, chunksize=chunk_size):
-                    for index, row in chunk.iterrows():
-                        all_urls.add(row['url'])
-                        if len(all_urls) >= batch_size:
-                            self.process_batch(all_urls, futures, executor)
-                            all_urls.clear()
+            threading.Thread(target=self.process_csv_file, args=(filepath, chunk_size, batch_size)).start()
+
+    def process_csv_file(self, filepath, chunk_size, batch_size):
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = []
+            all_urls = set()
+            for chunk in pd.read_csv(filepath, chunksize=chunk_size):
+                for index, row in chunk.iterrows():
+                    all_urls.add(row['url'])
+                    if len(all_urls) >= batch_size:
+                        self.process_batch(all_urls, futures, executor)
+                        all_urls.clear()
                 if all_urls:
                     self.process_batch(all_urls, futures, executor)
 
-                for future in as_completed(futures):
-                    future.result()  # Handle results or exceptions here
+            for future in as_completed(futures):
+                future.result()
 
-            messagebox.showinfo("Processing Complete", "All URLs have been processed.")
-            self.clear_all_widgets()
-            self.create_option_buttons()
+        # Execute the completion logic in the main thread
+        self.root.after(0, self.on_processing_complete)
+
+    def on_processing_complete(self):
+        messagebox.showinfo("Processing Complete", "All URLs have been processed.")
+        self.clear_all_widgets()
+        self.create_option_buttons()
 
     def process_batch(self, url_batch, futures, executor):
         existing_urls = self.check_urls_exist(url_batch)
