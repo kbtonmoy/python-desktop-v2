@@ -99,84 +99,81 @@ class DatabaseApp:
         except Error as e:
             messagebox.showerror("Error", f"Error connecting to MySQL Database: {e}")
 
-    def check_duplicates_in_database(self, urls):
-        cursor = self.connection.cursor()
-        query = "SELECT root_domain FROM url_screenshots WHERE root_domain IN (%s)"
-        format_strings = ','.join(['%s'] * len(urls))
-        cursor.execute(query % format_strings, tuple(urls))
-        result = cursor.fetchall()
-        cursor.close()
-        return [item[0] for item in result]
-
-    def upload_and_process_csv(self, chunk_size=1000):
+    def upload_and_process_csv(self, chunk_size=1000, batch_size=100):
         filepath = filedialog.askopenfilename()
         if filepath:
             with ThreadPoolExecutor(max_workers=6) as executor:
-                # Store the futures in a list
                 futures = []
+                all_urls = set()
                 for chunk in pd.read_csv(filepath, chunksize=chunk_size):
                     for index, row in chunk.iterrows():
-                        url = row['url']
-                        if not self.check_screenshot_exists(url):
-                            future = executor.submit(self.take_screenshot_with_external_api, url)
-                            futures.append(future)
+                        all_urls.add(row['url'])
+                        if len(all_urls) >= batch_size:
+                            self.process_batch(all_urls, futures, executor)
+                            all_urls.clear()
+                if all_urls:
+                    self.process_batch(all_urls, futures, executor)
 
-                # Wait for all futures to complete
                 for future in as_completed(futures):
-                    future.result()  # You can handle results or exceptions here
+                    future.result()  # Handle results or exceptions here
 
-            # Show a message box after all tasks are done
             messagebox.showinfo("Processing Complete", "All URLs have been processed.")
             self.clear_all_widgets()
             self.create_option_buttons()
 
-    def check_screenshot_exists(self, root_domain):
-        connection = None  # Initialize connection to None
+    def process_batch(self, url_batch, futures, executor):
+        existing_urls = self.check_urls_exist(url_batch)
+        for url in url_batch:
+            if url not in existing_urls:
+                future = executor.submit(self.take_screenshot_with_external_api, url)
+                futures.append(future)
+
+    def check_urls_exist(self, url_batch):
+        connection = None
         cursor = None
         try:
-            # Database connection details
             connection = mysql.connector.connect(
-                host=self.host,  # e.g., 'localhost'
-                database=self.database,  # your database name
-                user=self.user,  # your database username
-                password=self.password)  # your database password
+                host=self.host,
+                database=self.database,
+                user=self.user,
+                password=self.password)
 
-            query = "SELECT COUNT(1) FROM url_screenshots WHERE root_domain = %s"
-
+            query = "SELECT root_domain FROM url_screenshots WHERE root_domain IN (%s)"
+            format_strings = ','.join(['%s'] * len(url_batch))
             cursor = connection.cursor()
-            cursor.execute(query, (root_domain,))
-            result = cursor.fetchone()
-
-            return result[0] > 0
+            cursor.execute(query % format_strings, tuple(url_batch))
+            existing_urls = {item[0] for item in cursor.fetchall()}
+            return existing_urls
 
         except mysql.connector.Error as error:
             print(f"Failed to check database: {error}")
-            return False
+            return set()
         finally:
-            if connection.is_connected():
+            if connection and connection.is_connected():
                 cursor.close()
                 connection.close()
 
+
     def take_screenshot_with_external_api(self, url):
-        print(f"Starting to capture {url}")
+        print(f"Start Capturing {url}")
         api_url = f"http://74.50.70.82:4000/api/screenshot?resX=1920&resY=1080&outFormat=png&waitTime=100&isFullPage=false&dismissModals=true&url=http://{url}"
         sanitized_url = url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')
         screenshot_filename = f"{sanitized_url}.png"
         output_file = os.path.join('screenshots', screenshot_filename)
 
-        # Ensure the screenshots directory exists
-        if not os.path.exists('screenshots'):
-            os.makedirs('screenshots')
-
         try:
             response = requests.get(api_url)
             if response.status_code == 200:
-                with open(output_file, "wb") as file:
-                    file.write(response.content)
-                print(f"Image saved as {output_file}")
-                # Optionally, you can update the database here
-                self.update_database(url, output_file)
-                return True
+                # Check if the response content type is an image
+                if 'image' in response.headers.get('Content-Type', ''):
+                    with open(output_file, "wb") as file:
+                        file.write(response.content)
+                    print(f"Image saved as {output_file}")
+                    self.update_database(url, output_file)
+                    return True
+                else:
+                    print(f"Invalid Domain {url}")
+                    return False
             else:
                 print(f"Failed to fetch the image for {url}. Status code: {response.status_code}")
                 return False
