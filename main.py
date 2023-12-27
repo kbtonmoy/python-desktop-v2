@@ -35,6 +35,7 @@ class DatabaseApp:
         self.current_chunk_index = -1
         self.thread_semaphore = Semaphore(4)
         self.failed_urls = []
+        self.queue = queue.Queue()
 
 
 # All Frames are here
@@ -129,27 +130,55 @@ class DatabaseApp:
         self.render_label = tk.Label(self.root, text="Screenshot taking process is running. Please hold tight.")
         self.render_label.pack(pady=5)
 
+        self.chunks = []  # List to store all the chunks
         chunk_size = 500  # Set the chunk size
+        self.total_chunks = 0
+        self.completed_chunks = 0
+
+        # Read the CSV and break into chunks
         with open(filename, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
             chunk = []
-            self.total_chunks = 0
-            self.completed_chunks = 0
             for row in reader:
                 chunk.append(row['url'])
                 if len(chunk) == chunk_size:
-                    self.process_chunk(chunk)
+                    self.chunks.append(chunk)
                     chunk = []
                     self.total_chunks += 1
-            if chunk:
-                self.process_chunk(chunk)
+            if chunk:  # Add the last chunk if it's not empty
+                self.chunks.append(chunk)
                 self.total_chunks += 1
 
+        # Start processing the first chunk
+        if self.chunks:
+            self.process_chunk(self.chunks.pop(0))
+
     def process_chunk(self, urls):
-        self.failed_urls.clear()
-        duplicates = self.check_duplicates_in_database(urls)
-        urls = list(set(urls) - set(duplicates))
-        self.start_screenshot_process(urls)
+        # Prepare for processing the chunk
+        self.failed_urls = []  # Reset failed URLs for the new chunk
+        self.current_chunk_index += 1
+        self.completed_threads = 0
+        self.total_threads = len(urls)  # Number of threads for this chunk
+
+        # Process each URL in the chunk
+        for url in urls:
+            self.thread_semaphore.acquire()  # Manage concurrency
+            thread = threading.Thread(target=self.take_screenshots, args=(url, self.queue))
+            thread.start()
+
+        # Check for the completion of the current chunk
+        self.root.after(100, self.check_current_chunk_completion)
+
+    def check_current_chunk_completion(self):
+        if self.completed_threads >= self.total_threads:
+            # Current chunk processing completed
+            self.completed_chunks += 1
+            if self.chunks:
+                # Start processing the next chunk
+                self.process_chunk(self.chunks.pop(0))
+        else:
+            # Recheck after a short delay
+            self.root.after(100, self.check_current_chunk_completion)
 
     def start_screenshot_process(self, urls):
         self.current_chunk_index += 1
@@ -178,20 +207,19 @@ class DatabaseApp:
                 try:
                     message = self.queue.get_nowait()
                     if message == "progress":
-                        # Since we're updating a Tkinter variable, we use `self.root.after`
-                        self.root.after(0, lambda: setattr(self, 'completed_threads', self.completed_threads + 1))
+                        # Update completed threads count
+                        self.completed_threads += 1
                 except queue.Empty:
                     break  # Break out of the loop if the queue is empty
 
-            # Check if all threads have completed their work
-            if self.completed_threads >= self.total_chunks:
-                # Update GUI to indicate completion
-                # self.root.after(0, lambda: self.render_label.config(text="Screenshot taking process completed."))
-                # self.root.after(0, lambda: messagebox.showinfo("Info",
-                #                                                "Screenshots taken for all URLs and database updated"))
-                # self.root.after(0, self.clear_all_widgets)
-                # self.root.after(0, self.create_option_buttons)
-                pass
+            # Check if all threads have completed their work for the current chunk
+            if self.completed_threads >= self.total_threads:
+                # Check if there are more chunks to process
+                if self.chunks:
+                    self.root.after(0, lambda: self.process_chunk(self.chunks.pop(0)))
+                else:
+                    # All chunks are done, perform completion tasks
+                    pass
             else:
                 # Reschedule this method to check again after a short delay
                 self.root.after(100, self.check_queue)
@@ -322,13 +350,19 @@ class DatabaseApp:
 
     def update_database(self, url, screenshot_path):
         try:
+            # Check if connection is alive, if not, reconnect
+            if not self.connection or not self.connection.is_connected():
+                self.connect_to_database()
+
+            # Perform the database operation
             cursor = self.connection.cursor()
             query = "INSERT INTO url_screenshots (root_domain, location) VALUES (%s, %s) ON DUPLICATE KEY UPDATE location = VALUES(location)"
             cursor.execute(query, (url, screenshot_path))
             self.connection.commit()
             cursor.close()
         except Error as e:
-            messagebox.showerror("Database Error", f"Error updating the database: {e}")
+            print(f"Error updating the database: {e}")
+            # Optionally, try to reconnect or handle the error in a way that's appropriate for your application
 
     # Video Generation Logics are here
     def initialize_video_render_progress_bar(self):
