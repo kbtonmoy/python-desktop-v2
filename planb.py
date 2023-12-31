@@ -1,3 +1,4 @@
+import logging
 import shutil
 import threading
 import tkinter as tk
@@ -17,6 +18,8 @@ import os
 import requests
 
 load_dotenv()
+logging.basicConfig(filename='app.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
 class DatabaseApp:
     def __init__(self, root):
 
@@ -92,26 +95,33 @@ class DatabaseApp:
     def upload_and_process_csv(self, chunk_size=1000, batch_size=100):
         filepath = filedialog.askopenfilename()
         if filepath:
-            threading.Thread(target=self.process_csv_file, args=(filepath, chunk_size, batch_size)).start()
+            try:
+                thread = threading.Thread(target=self.process_csv_file, args=(filepath, chunk_size, batch_size))
+                thread.start()
+            except Exception as e:
+                logging.error(f"Error starting thread for processing CSV: {e}")
+                # Notify the user or handle the error
 
     def process_csv_file(self, filepath, chunk_size, batch_size):
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            futures = []
-            all_urls = set()
-            for chunk in pd.read_csv(filepath, chunksize=chunk_size):
-                for index, row in chunk.iterrows():
-                    all_urls.add(row['url'])
-                    if len(all_urls) >= batch_size:
+        try:
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                futures = []
+                all_urls = set()
+                for chunk in pd.read_csv(filepath, chunksize=chunk_size):
+                    for _, row in chunk.iterrows():
+                        all_urls.add(row['url'])
+                        if len(all_urls) >= batch_size:
+                            self.process_batch(all_urls, futures, executor)
+                            all_urls.clear()
+                    if all_urls:
                         self.process_batch(all_urls, futures, executor)
-                        all_urls.clear()
-                if all_urls:
-                    self.process_batch(all_urls, futures, executor)
 
-            for future in as_completed(futures):
-                future.result()
+                for future in as_completed(futures):
+                    future.result()  # Handle or log potential exceptions here
 
-        # Execute the completion logic in the main thread
-        self.root.after(0, self.on_processing_complete)
+            self.root.after(0, self.on_processing_complete)
+        except Exception as e:
+            logging.error(f"Error processing CSV file: {e}")
 
     def on_processing_complete(self):
         messagebox.showinfo("Processing Complete", "All URLs have been processed.")
@@ -119,39 +129,32 @@ class DatabaseApp:
         self.create_option_buttons()
 
     def process_batch(self, url_batch, futures, executor):
-        existing_urls = self.check_urls_exist(url_batch)
-        for url in url_batch:
-            if url not in existing_urls:
-                future = executor.submit(self.take_screenshot_with_external_api, url)
-                futures.append(future)
+        try:
+            existing_urls = self.check_urls_exist(url_batch)
+            for url in url_batch:
+                if url not in existing_urls:
+                    future = executor.submit(self.take_screenshot_with_external_api, url)
+                    futures.append(future)
+        except Exception as e:
+            logging.error(f"Error processing batch: {e}")
 
     def check_urls_exist(self, url_batch):
-        connection = None
-        cursor = None
+        if not self.connection or not self.connection.is_connected():
+            self.connect_to_database()
+
         try:
-            connection = mysql.connector.connect(
-                host=self.host,
-                database=self.database,
-                user=self.user,
-                password=self.password)
-
-            query = "SELECT root_domain FROM url_screenshots WHERE root_domain IN (%s)"
-            format_strings = ','.join(['%s'] * len(url_batch))
-            cursor = connection.cursor()
-            cursor.execute(query % format_strings, tuple(url_batch))
-            existing_urls = {item[0] for item in cursor.fetchall()}
-            return existing_urls
-
-        except mysql.connector.Error as error:
-            print(f"Failed to check database: {error}")
+            with self.connection.cursor() as cursor:
+                query = "SELECT root_domain FROM url_screenshots WHERE root_domain IN (%s)"
+                format_strings = ','.join(['%s'] * len(url_batch))
+                cursor.execute(query % format_strings, tuple(url_batch))
+                existing_urls = {item[0] for item in cursor.fetchall()}
+                return existing_urls
+        except mysql.connector.Error as e:
+            logging.error(f"Failed to check database: {e}")
             return set()
-        finally:
-            if connection and connection.is_connected():
-                cursor.close()
-                connection.close()
-
 
     def take_screenshot_with_external_api(self, url):
+        logging.info(f"Start Capturing {url}")
         print(f"Start Capturing {url}")
         api_url = f"http://74.50.70.82:4000/api/screenshot?resX=1920&resY=1080&outFormat=png&waitTime=100&isFullPage=false&dismissModals=true&url=http://{url}"
         sanitized_url = url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')
@@ -159,40 +162,34 @@ class DatabaseApp:
         output_file = os.path.join('screenshots', screenshot_filename)
 
         try:
-            response = requests.get(api_url)
-            if response.status_code == 200:
-                # Check if the response content type is an image
-                if 'image' in response.headers.get('Content-Type', ''):
-                    with open(output_file, "wb") as file:
-                        file.write(response.content)
-                    print(f"Image saved as {output_file}")
-                    self.update_database(url, output_file)
-                    return True
-                else:
-                    print(f"Invalid Domain {url}")
-                    return False
+            response = requests.get(api_url, timeout=30)
+            if response.status_code == 200 and 'image' in response.headers.get('Content-Type', ''):
+                with open(output_file, "wb") as file:
+                    file.write(response.content)
+                logging.info(f"Image saved as {output_file}")
+                print(f"Image saved as {output_file}")
+                self.update_database(url, output_file)
+                return True
             else:
-                print(f"Failed to fetch the image for {url}. Status code: {response.status_code}")
+                logging.error(f"Invalid response for {url}: Status code {response.status_code}")
                 return False
         except Exception as e:
-            print(f"An error occurred while fetching {url}: {str(e)}")
+            logging.error(f"An error occurred while fetching {url}: {str(e)}")
             return False
 
     def update_database(self, url, screenshot_path):
         try:
-            # Check if connection is alive, if not, reconnect
             if not self.connection or not self.connection.is_connected():
                 self.connect_to_database()
 
-            # Perform the database operation
-            cursor = self.connection.cursor()
-            query = "INSERT INTO url_screenshots (root_domain, location) VALUES (%s, %s) ON DUPLICATE KEY UPDATE location = VALUES(location)"
-            cursor.execute(query, (url, screenshot_path))
-            self.connection.commit()
-            cursor.close()
-        except Error as e:
-            print(f"Error updating the database: {e}")
-            # Optionally, try to reconnect or handle the error in a way that's appropriate for your application
+            with self.connection.cursor() as cursor:
+                query = "INSERT INTO url_screenshots (root_domain, location) VALUES (%s, %s) ON DUPLICATE KEY UPDATE location = VALUES(location)"
+                cursor.execute(query, (url, screenshot_path))
+                self.connection.commit()
+        except mysql.connector.Error as e:
+            logging.error(f"Error updating the database: {e}")
+            # Reconnect or handle the error
+            self.connect_to_database()
 
     # Video Generation Logics are here
     def initialize_video_render_progress_bar(self):
