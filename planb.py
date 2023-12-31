@@ -92,7 +92,7 @@ class DatabaseApp:
         except Error as e:
             messagebox.showerror("Error", f"Error connecting to MySQL Database: {e}")
 
-    def upload_and_process_csv(self, chunk_size=1000, batch_size=100):
+    def upload_and_process_csv(self, chunk_size=500, batch_size=100):
         filepath = filedialog.askopenfilename()
         if filepath:
             try:
@@ -104,7 +104,7 @@ class DatabaseApp:
 
     def process_csv_file(self, filepath, chunk_size, batch_size):
         try:
-            with ThreadPoolExecutor(max_workers=6) as executor:
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = []
                 all_urls = set()
                 for chunk in pd.read_csv(filepath, chunksize=chunk_size):
@@ -124,6 +124,7 @@ class DatabaseApp:
             logging.error(f"Error processing CSV file: {e}")
 
     def on_processing_complete(self):
+        logging.info(f"Processing Complete")
         messagebox.showinfo("Processing Complete", "All URLs have been processed.")
         self.clear_all_widgets()
         self.create_option_buttons()
@@ -162,7 +163,7 @@ class DatabaseApp:
         output_file = os.path.join('screenshots', screenshot_filename)
 
         try:
-            response = requests.get(api_url, timeout=30)
+            response = requests.get(api_url, timeout=100)
             if response.status_code == 200 and 'image' in response.headers.get('Content-Type', ''):
                 with open(output_file, "wb") as file:
                     file.write(response.content)
