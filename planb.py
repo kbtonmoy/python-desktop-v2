@@ -96,15 +96,20 @@ class DatabaseApp:
         filepath = filedialog.askopenfilename()
         if filepath:
             try:
-                thread = threading.Thread(target=self.process_csv_file, args=(filepath, chunk_size, batch_size))
+                thread = threading.Thread(target=self.safe_process_csv_file, args=(filepath, chunk_size, batch_size))
                 thread.start()
             except Exception as e:
                 logging.error(f"Error starting thread for processing CSV: {e}")
-                # Notify the user or handle the error
+
+    def safe_process_csv_file(self, filepath, chunk_size, batch_size):
+        try:
+            self.process_csv_file(filepath, chunk_size, batch_size)
+        except Exception as e:
+            logging.error(f"Unhandled exception in process_csv_file thread: {e}")
 
     def process_csv_file(self, filepath, chunk_size, batch_size):
         try:
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 futures = []
                 all_urls = set()
                 for chunk in pd.read_csv(filepath, chunksize=chunk_size):
@@ -134,10 +139,17 @@ class DatabaseApp:
             existing_urls = self.check_urls_exist(url_batch)
             for url in url_batch:
                 if url not in existing_urls:
-                    future = executor.submit(self.take_screenshot_with_external_api, url)
+                    future = executor.submit(self.safe_take_screenshot_with_external_api, url)
                     futures.append(future)
         except Exception as e:
             logging.error(f"Error processing batch: {e}")
+
+    def safe_take_screenshot_with_external_api(self, url):
+        try:
+            return self.take_screenshot_with_external_api(url)
+        except Exception as e:
+            logging.error(f"Unhandled exception in take_screenshot_with_external_api: {e}")
+            return False
 
     def check_urls_exist(self, url_batch):
         if not self.connection or not self.connection.is_connected():
