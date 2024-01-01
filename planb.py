@@ -2,7 +2,7 @@ import logging
 import shutil
 import threading
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from tkinter import ttk
 from tkinter import filedialog, messagebox
 import mysql.connector
@@ -109,24 +109,40 @@ class DatabaseApp:
 
     def process_csv_file(self, filepath, chunk_size, batch_size):
         try:
-            with ThreadPoolExecutor(max_workers=3) as executor:
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = []
                 all_urls = set()
+                self.running_batches = 0
+                self.max_concurrent_batches = 10  # Adjust as necessary
+
                 for chunk in pd.read_csv(filepath, chunksize=chunk_size):
                     for _, row in chunk.iterrows():
                         all_urls.add(row['url'])
                         if len(all_urls) >= batch_size:
-                            self.process_batch(all_urls, futures, executor)
+                            if self.running_batches >= self.max_concurrent_batches:
+                                self.wait_for_available_batch(futures)
+                            futures.extend(self.process_batch(all_urls, executor))
                             all_urls.clear()
                     if all_urls:
-                        self.process_batch(all_urls, futures, executor)
+                        if self.running_batches >= self.max_concurrent_batches:
+                            self.wait_for_available_batch(futures)
+                        futures.extend(self.process_batch(all_urls, executor))
 
                 for future in as_completed(futures):
-                    future.result()  # Handle or log potential exceptions here
+                    result = future.result()
+                    if result is not None:
+                        logging.error(result)
 
-            self.root.after(0, self.on_processing_complete)
+                self.root.after(0, self.on_processing_complete)
         except Exception as e:
             logging.error(f"Error processing CSV file: {e}")
+
+    def wait_for_available_batch(self, futures):
+        while self.running_batches >= self.max_concurrent_batches:
+            done, _ = wait(futures, timeout=0.5)
+            for d in done:
+                self.running_batches -= 1
+                futures.remove(d)
 
     def on_processing_complete(self):
         logging.info(f"Processing Complete")
@@ -134,15 +150,15 @@ class DatabaseApp:
         self.clear_all_widgets()
         self.create_option_buttons()
 
-    def process_batch(self, url_batch, futures, executor):
-        try:
-            existing_urls = self.check_urls_exist(url_batch)
-            for url in url_batch:
-                if url not in existing_urls:
-                    future = executor.submit(self.safe_take_screenshot_with_external_api, url)
-                    futures.append(future)
-        except Exception as e:
-            logging.error(f"Error processing batch: {e}")
+    def process_batch(self, url_batch, executor):
+        self.running_batches += 1
+        futures = []
+        existing_urls = self.check_urls_exist(url_batch)
+        for url in url_batch:
+            if url not in existing_urls:
+                future = executor.submit(self.take_screenshot_with_external_api, url)
+                futures.append(future)
+        return futures
 
     def safe_take_screenshot_with_external_api(self, url):
         try:
