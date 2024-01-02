@@ -45,7 +45,7 @@ def get_screenshot(root_domain):
     sanitized_domain = sanitize_root_domain(root_domain)
     api_url = f"http://74.50.70.82:4000/api/screenshot?resX=1920&resY=1080&outFormat=png&waitTime=100&isFullPage=false&dismissModals=true&url=http://{sanitized_domain}"
     response = requests.get(api_url)
-    if response.status_code == 200:
+    if response.status_code == 200 and 'image' in response.headers.get('Content-Type', ''):
         file_name = f'screenshots/{sanitized_domain}.png'
         with open(file_name, 'wb') as file:
             file.write(response.content)
