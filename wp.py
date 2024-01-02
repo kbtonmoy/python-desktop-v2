@@ -24,7 +24,6 @@ def connect_db():
         return mysql.connector.connect(**db_config)
     except mysql.connector.Error as err:
         logging.error(f"Database connection error: {err}")
-        sys.exit(1)
 
 def bulk_check_existing_domains(root_domains):
     db = connect_db()
@@ -109,6 +108,7 @@ def main():
 
     logging.info("All URLs have been processed.")
     print("All URLs have been processed.")
+    input("Press Enter to exit...")  # Wait for user input before exiting
 
 if __name__ == "__main__":
     main()
