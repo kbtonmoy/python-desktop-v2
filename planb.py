@@ -572,7 +572,7 @@ class DatabaseApp:
         self.progress_bar = ttk.Progressbar(self.root, orient=tk.HORIZONTAL, length=300, mode='determinate')
         self.progress_bar.pack(pady=20)
         self.completed_threads = 0
-        semaphore = Semaphore(4)
+        semaphore = Semaphore(2)
         progress_queue = queue.Queue()
 
         def update_progress():

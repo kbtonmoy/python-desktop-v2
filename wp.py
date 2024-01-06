@@ -49,11 +49,13 @@ def get_screenshot(root_domain):
         file_name = f'screenshots/{sanitized_domain}.png'
         with open(file_name, 'wb') as file:
             file.write(response.content)
+
         logging.info(f"Image saved as {file_name}")
         print(f"Image saved as {file_name}")
         return sanitized_domain
     else:
-        logging.error(f"Failed to capture {root_domain}, status code {response.status_code}")
+        print(f"Invalid Domain {root_domain}")
+        logging.error(f"Failed to capture {root_domain}. Invalid Domain")
     return None
 
 def save_to_db(root_domain, location):
