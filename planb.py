@@ -238,10 +238,10 @@ class DatabaseApp:
 
     def update_video_database(self, root_domain, full_output_path, cursor, connection):
         try:
-            with open("video_description.txt", "r") as desc_file:
+            with open("video_description.txt", "r", encoding="utf-8") as desc_file:
                 description_template = desc_file.read()
 
-            with open("video_title.txt", "r") as title_file:
+            with open("video_title.txt", "r", encoding="utf-8") as title_file:
                 title_template = title_file.read()
             # Fetch dynamic data from ecom_platform1
             table_name = self.table_var.get()
