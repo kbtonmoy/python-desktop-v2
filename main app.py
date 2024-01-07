@@ -2,11 +2,9 @@ import logging
 import shutil
 import threading
 import tkinter as tk
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from tkinter import ttk
 from tkinter import filedialog, messagebox
 import mysql.connector
-import pandas as pd
 from dotenv import load_dotenv
 from mysql.connector import Error
 from requests.auth import HTTPBasicAuth
@@ -18,13 +16,17 @@ import os
 import requests
 
 load_dotenv()
-logging.basicConfig(filename='app.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+# Ensure the 'logs' directory exists
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+logging.basicConfig(filename='logs/MainApp.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 class DatabaseApp:
     def __init__(self, root):
 
         self.root = root
-        self.root.title("Database Connection App")
+        self.root.title("Video Processing App")
         self.connection_details = {}
         self.connection = None  # Database connection instance variable
         self.create_connection_frame()
@@ -60,21 +62,22 @@ class DatabaseApp:
     def show_success_frame(self):
         self.create_option_buttons()
 
-    def take_screenshots_frame(self):
-        self.clear_all_widgets()
-        tk.Button(self.root, text="Upload CSV", command=self.upload_and_process_csv).pack(pady=5)
 # All Buttons are here
 
     def create_option_buttons(self):
         # New method to create buttons for "Take Screenshots", "Prepare Videos", "Upload on YouTube"
-        tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack(padx=10, pady=10)
-        tk.Button(self.root, text="Cleanup Screenshots ", command=self.cleanup_ss_frame).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Cleanup Screenshots ", command=self._create_cleanup_interface).pack(padx=10, pady=10)
         tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Upload on Video Server", command=self.process_and_upload_videos).pack(padx=10, pady=10)
         tk.Button(self.root, text="Generate WP Pages ", command=self.open_wp_page_generate_frame).pack(padx=10, pady=10)
 
 
 # ALl logical Functions are here
+
+    def create_back_option(self):
+        back_button = tk.Button(self.root, text="Back to main menu", command=self.on_all_threads_complete)
+        back_button.pack(padx=10, pady=10)
+
     def connect_to_database(self):
         host = os.getenv("HOST")
         user = os.getenv("USER")
@@ -93,24 +96,23 @@ class DatabaseApp:
         except Error as e:
             messagebox.showerror("Error", f"Error connecting to MySQL Database: {e}")
 
-# Screenshot Generation is moved to a different file named wp.py
+# Screenshot Generation is moved to a different file named screenshot processor.py
 
 #Screenshot Cleanup Process
 
-    def cleanup_ss_frame(self):
+    def _create_cleanup_interface(self):
         self.clear_all_widgets()
-        kilobyte_label = tk.Label(root, text="Enter size in Kilobytes:")
-        kilobyte_label.pack()
+        self.kilobyte_label = tk.Label(root, text="Enter the size in Kilobytes to delete screenshots smaller than the specified input: ")
+        self.kilobyte_label.pack(padx=10, pady=10)
+        self.kilobyte_entry = tk.Entry(self.root)
+        self.kilobyte_entry.pack(padx=10, pady=10)
 
-        kilobyte_entry = tk.Entry(root)
-        kilobyte_entry.pack()
-
-        # Cleanup button
-        cleanup_button = tk.Button(root, text="Start Cleanup", command=lambda: self.cleanup_action())
+        cleanup_button = tk.Button(self.root, text="Start Cleanup", command=self.cleanup_action)
         cleanup_button.pack()
+        self.create_back_option()
 
-    def get_small_files(folder, size_limit_kb):
-        size_limit_bytes = size_limit_kb * 1024  # Convert KB to bytes
+    def get_small_files(self, folder, size_limit_kb):
+        size_limit_bytes = size_limit_kb * 1024
         small_files = []
         for filename in os.listdir(folder):
             file_path = os.path.join(folder, filename)
@@ -119,68 +121,54 @@ class DatabaseApp:
         return small_files
 
     def cleanup_action(self):
+        screenshots_folder = 'screenshots'
         try:
-            size_limit_kb = int(kilobyte_entry.get())
+            size_limit_kb = int(self.kilobyte_entry.get())
         except ValueError:
             messagebox.showwarning("Warning", "Invalid input for size. Please enter a number.")
             return
 
-        small_files = get_small_files(screenshots_folder, size_limit_kb)
+        small_files = self.get_small_files(screenshots_folder, size_limit_kb)
 
         if small_files:
             confirm = messagebox.askyesno("Confirm", f"Are you sure you want to delete {len(small_files)} items?")
             if confirm:
-                delete_files_and_db_entries(small_files)
+                self.delete_files_and_db_entries(small_files)
                 messagebox.showinfo("Info", "Small files and corresponding database entries deleted successfully.")
             else:
                 messagebox.showinfo("Info", "Deletion cancelled.")
         else:
             messagebox.showinfo("Info", "No small files found to delete.")
 
-    
     def delete_files_and_db_entries(self, files):
-    # Early return if there are no files to delete
+        screenshots_folder = 'screenshots'
         if not files:
             print("No files to delete.")
             return
 
-        # Use the existing connect_to_database method to establish a connection
         if not self.connection or not self.connection.is_connected():
-            self.connect_to_database()
+            self._setup_database_connection()
 
+        cursor = None
         try:
             cursor = self.connection.cursor()
-
-            # Iterate over the files and perform deletion
             for file in files:
                 domain = file.replace('.png', '')
-
-                # Delete from database
                 query = "DELETE FROM url_screenshots WHERE root_domain = %s"
                 cursor.execute(query, (domain,))
-
-                # Delete file from filesystem
                 file_path = os.path.join(screenshots_folder, file)
-                if os.path.exists(file_path):  # Check if the file exists before attempting to delete
+                if os.path.exists(file_path):
                     os.remove(file_path)
-
-            # Commit changes to the database after all operations are successful
             self.connection.commit()
-
         except mysql.connector.Error as error:
             print(f"Database error: {error}")
             if self.connection:
-                self.connection.rollback()  # Rollback in case of error
-
+                self.connection.rollback()
         except Exception as e:
             print(f"General error: {e}")
-
         finally:
-            # Close the cursor
             if cursor:
                 cursor.close()
-
-
 
     # Video Generation Logics are here
     def initialize_video_render_progress_bar(self):
@@ -188,7 +176,6 @@ class DatabaseApp:
         self.render_label.pack(pady=5)
         self.progress = ttk.Progressbar(self.root, orient="horizontal", length=300, mode='determinate')
         self.progress.pack(pady=5)
-
 
     def destroy_video_render_progress_bar(self):
         if self.progress:
@@ -200,10 +187,10 @@ class DatabaseApp:
 
     def update_video_database(self, root_domain, full_output_path, cursor, connection):
         try:
-            with open("video_description.txt", "r", encoding="utf-8") as desc_file:
+            with open("static/video_description.txt", "r", encoding="utf-8") as desc_file:
                 description_template = desc_file.read()
 
-            with open("video_title.txt", "r", encoding="utf-8") as title_file:
+            with open("static/video_title.txt", "r", encoding="utf-8") as title_file:
                 title_template = title_file.read()
             # Fetch dynamic data from ecom_platform1
             table_name = self.table_var.get()
@@ -292,17 +279,24 @@ class DatabaseApp:
             total_videos = len(data)
             for index, (screenshot_path, video_path, output_path, root_domain, image2_path, image3_path, timeline2,
                         timeline3) in enumerate(data):
-                # Unique temporary folder for each video processing
-                temp_folder = f"temp_{root_domain}_{threading.get_ident()}"
+                # Base directory for temporary files
+                base_temp_dir = 'temp'
+                if not os.path.exists(base_temp_dir):
+                    os.makedirs(base_temp_dir)
+
+                # Unique temporary folder for each video processing inside the base 'temp' directory
+                temp_folder = os.path.join(base_temp_dir, f"temp_{root_domain}_{threading.get_ident()}")
                 os.makedirs(temp_folder, exist_ok=True)
 
                 self.process_video(screenshot_path, video_path, output_path, temp_folder, image2_path, image3_path,
                                    timeline2, timeline3)
                 full_output_path = os.path.join(self.export_dir if self.export_dir else 'videos', output_path)
-                # Clean up the temporary folder after processing this video
 
                 self.update_video_database(root_domain, full_output_path, local_cursor, local_connection)
+
+                # Clean up the temporary folder after processing this video
                 shutil.rmtree(temp_folder)
+
                 # Update progress bar
                 progress_percent = (index + 1) / total_videos * 100
                 self.root.after(100, lambda p=progress_percent: self.update_progress(p))
@@ -369,20 +363,20 @@ class DatabaseApp:
         # New window (or frame) for video preparation settings
         self.clear_all_widgets()
         # Dropdown for table selection
-        tk.Label(self.root, text="Select a table:").pack(pady=5)
+        tk.Label(self.root, text="Choose a table from which dynamic data will be sourced for populating the video description and title fields").pack(pady=5)
         self.table_var = tk.StringVar()
         tables = self.get_tables()
         table_dropdown = tk.OptionMenu(self.root, self.table_var, *tables)
         table_dropdown.pack(pady=5)
 
         # Input field for video file
-        tk.Label(self.root, text="Select a video file:").pack(pady=5)
+        tk.Label(self.root, text="Select a facecam video file:").pack(pady=5)
         self.video_path_var = tk.StringVar()
         tk.Entry(self.root, textvariable=self.video_path_var, state='readonly').pack(pady=5)
         tk.Button(self.root, text="Browse", command=self.select_video_file).pack(pady=5)
 
         # Input field for export directory
-        tk.Label(self.root, text="Select export directory:").pack(pady=5)
+        tk.Label(self.root, text="Select export directory where the vidoes will be saved:").pack(pady=5)
         self.export_dir_var = tk.StringVar()
         tk.Entry(self.root, textvariable=self.export_dir_var, state='readonly').pack(pady=5)
         tk.Button(self.root, text="Browse", command=self.select_export_directory).pack(pady=5)
@@ -596,7 +590,7 @@ class DatabaseApp:
         # New window (or frame) for video preparation settings
         self.clear_all_widgets()
         # Dropdown for table selection
-        tk.Label(self.root, text="Select a table:").pack(pady=5)
+        tk.Label(self.root, text="Choose a table from which dynamic data will be sourced for populating the dynamic fields set on wp_template.html and wp_page_title.html").pack(pady=5)
         self.table_var = tk.StringVar()
         tables = self.get_tables()
         table_dropdown = tk.OptionMenu(self.root, self.table_var, *tables)
@@ -674,7 +668,7 @@ class DatabaseApp:
 
     def modify_html(self, data, youtube_link):
         # Load your HTML file
-        with open("wp_template.html", "r") as file:
+        with open("static/wp_template.html", "r") as file:
             html_content = file.read()
 
         # Replace placeholders in the HTML file with data from the selected table
@@ -709,32 +703,11 @@ class DatabaseApp:
             return None
 
 # Global Functions are here
-
     def clear_all_widgets(self):
-
         for widget in root.winfo_children():
             widget.destroy()
-
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = DatabaseApp(root)
     root.mainloop()
-
-
- # def create_scrollable_frame(self):
-    #     canvas = Canvas(self.root)
-    #     scrollbar = Scrollbar(self.root, orient="vertical", command=canvas.yview)
-    #     self.scrollable_frame = Frame(canvas)
-    #
-    #     self.scrollable_frame.bind(
-    #         "<Configure>",
-    #         lambda e: canvas.configure(
-    #             scrollregion=canvas.bbox("all")
-    #         )
-    #     )
-    #     canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
-    #     canvas.configure(yscrollcommand=scrollbar.set)
-    #
-    #     canvas.pack(side="left", fill="both", expand=True)
-    #     scrollbar.pack(side="right", fill="y")

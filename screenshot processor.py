@@ -9,7 +9,12 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-logging.basicConfig(filename='appscreenshot.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+# Ensure the 'logs' directory exists
+if not os.path.exists('logs'):
+    os.makedirs('logs')
+
+logging.basicConfig(filename='logs/screenshot.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
 # Database connection
 db_config = {
