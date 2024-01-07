@@ -68,6 +68,7 @@ class DatabaseApp:
     def create_option_buttons(self):
         # New method to create buttons for "Take Screenshots", "Prepare Videos", "Upload on YouTube"
         tk.Button(self.root, text="Take Screenshots", command=self.take_screenshots_frame).pack(padx=10, pady=10)
+        tk.Button(self.root, text="Cleanup Screenshots ", command=self.cleanup_ss_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Prepare Videos", command=self.open_video_preparation_frame).pack(padx=10, pady=10)
         tk.Button(self.root, text="Upload on Video Server", command=self.process_and_upload_videos).pack(padx=10, pady=10)
         tk.Button(self.root, text="Generate WP Pages ", command=self.open_wp_page_generate_frame).pack(padx=10, pady=10)
@@ -92,133 +93,94 @@ class DatabaseApp:
         except Error as e:
             messagebox.showerror("Error", f"Error connecting to MySQL Database: {e}")
 
-    def upload_and_process_csv(self, chunk_size=500, batch_size=100):
-        filepath = filedialog.askopenfilename()
-        if filepath:
-            try:
-                thread = threading.Thread(target=self.safe_process_csv_file, args=(filepath, chunk_size, batch_size))
-                thread.start()
-            except Exception as e:
-                logging.error(f"Error starting thread for processing CSV: {e}")
+# Screenshot Generation is moved to a different file named wp.py
 
-    def safe_process_csv_file(self, filepath, chunk_size, batch_size):
-        try:
-            self.process_csv_file(filepath, chunk_size, batch_size)
-        except Exception as e:
-            logging.error(f"Unhandled exception in process_csv_file thread: {e}")
+#Screenshot Cleanup Process
 
-    def process_csv_file(self, filepath, chunk_size, batch_size):
-        try:
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = []
-                all_urls = set()
-                self.running_batches = 0
-                self.max_concurrent_batches = 10  # Adjust as necessary
-
-                for chunk in pd.read_csv(filepath, chunksize=chunk_size):
-                    for _, row in chunk.iterrows():
-                        all_urls.add(row['url'])
-                        if len(all_urls) >= batch_size:
-                            if self.running_batches >= self.max_concurrent_batches:
-                                self.wait_for_available_batch(futures)
-                            futures.extend(self.process_batch(all_urls, executor))
-                            all_urls.clear()
-                    if all_urls:
-                        if self.running_batches >= self.max_concurrent_batches:
-                            self.wait_for_available_batch(futures)
-                        futures.extend(self.process_batch(all_urls, executor))
-
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result is not None:
-                        logging.error(result)
-
-                self.root.after(0, self.on_processing_complete)
-        except Exception as e:
-            logging.error(f"Error processing CSV file: {e}")
-
-    def wait_for_available_batch(self, futures):
-        while self.running_batches >= self.max_concurrent_batches:
-            done, _ = wait(futures, timeout=0.5)
-            for d in done:
-                self.running_batches -= 1
-                futures.remove(d)
-
-    def on_processing_complete(self):
-        logging.info(f"Processing Complete")
-        messagebox.showinfo("Processing Complete", "All URLs have been processed.")
+    def cleanup_ss_frame(self):
         self.clear_all_widgets()
-        self.create_option_buttons()
+        kilobyte_label = tk.Label(root, text="Enter size in Kilobytes:")
+        kilobyte_label.pack()
 
-    def process_batch(self, url_batch, executor):
-        self.running_batches += 1
-        futures = []
-        existing_urls = self.check_urls_exist(url_batch)
-        for url in url_batch:
-            if url not in existing_urls:
-                future = executor.submit(self.take_screenshot_with_external_api, url)
-                futures.append(future)
-        return futures
+        kilobyte_entry = tk.Entry(root)
+        kilobyte_entry.pack()
 
-    def safe_take_screenshot_with_external_api(self, url):
+        # Cleanup button
+        cleanup_button = tk.Button(root, text="Start Cleanup", command=lambda: self.cleanup_action())
+        cleanup_button.pack()
+
+    def get_small_files(folder, size_limit_kb):
+        size_limit_bytes = size_limit_kb * 1024  # Convert KB to bytes
+        small_files = []
+        for filename in os.listdir(folder):
+            file_path = os.path.join(folder, filename)
+            if os.path.isfile(file_path) and os.path.getsize(file_path) < size_limit_bytes:
+                small_files.append(filename)
+        return small_files
+
+    def cleanup_action(self):
         try:
-            return self.take_screenshot_with_external_api(url)
-        except Exception as e:
-            logging.error(f"Unhandled exception in take_screenshot_with_external_api: {e}")
-            return False
+            size_limit_kb = int(kilobyte_entry.get())
+        except ValueError:
+            messagebox.showwarning("Warning", "Invalid input for size. Please enter a number.")
+            return
 
-    def check_urls_exist(self, url_batch):
+        small_files = get_small_files(screenshots_folder, size_limit_kb)
+
+        if small_files:
+            confirm = messagebox.askyesno("Confirm", f"Are you sure you want to delete {len(small_files)} items?")
+            if confirm:
+                delete_files_and_db_entries(small_files)
+                messagebox.showinfo("Info", "Small files and corresponding database entries deleted successfully.")
+            else:
+                messagebox.showinfo("Info", "Deletion cancelled.")
+        else:
+            messagebox.showinfo("Info", "No small files found to delete.")
+
+    
+    def delete_files_and_db_entries(self, files):
+    # Early return if there are no files to delete
+        if not files:
+            print("No files to delete.")
+            return
+
+        # Use the existing connect_to_database method to establish a connection
         if not self.connection or not self.connection.is_connected():
             self.connect_to_database()
 
         try:
-            with self.connection.cursor() as cursor:
-                query = "SELECT root_domain FROM url_screenshots WHERE root_domain IN (%s)"
-                format_strings = ','.join(['%s'] * len(url_batch))
-                cursor.execute(query % format_strings, tuple(url_batch))
-                existing_urls = {item[0] for item in cursor.fetchall()}
-                return existing_urls
-        except mysql.connector.Error as e:
-            logging.error(f"Failed to check database: {e}")
-            return set()
+            cursor = self.connection.cursor()
 
-    def take_screenshot_with_external_api(self, url):
-        logging.info(f"Start Capturing {url}")
-        print(f"Start Capturing {url}")
-        api_url = f"http://74.50.70.82:4000/api/screenshot?resX=1920&resY=1080&outFormat=png&waitTime=100&isFullPage=false&dismissModals=true&url=http://{url}"
-        sanitized_url = url.replace('http://', '').replace('https://', '').replace('www.', '').replace('/', '_')
-        screenshot_filename = f"{sanitized_url}.png"
-        output_file = os.path.join('screenshots', screenshot_filename)
+            # Iterate over the files and perform deletion
+            for file in files:
+                domain = file.replace('.png', '')
 
-        try:
-            response = requests.get(api_url, timeout=100)
-            if response.status_code == 200 and 'image' in response.headers.get('Content-Type', ''):
-                with open(output_file, "wb") as file:
-                    file.write(response.content)
-                logging.info(f"Image saved as {output_file}")
-                print(f"Image saved as {output_file}")
-                self.update_database(url, output_file)
-                return True
-            else:
-                logging.error(f"Invalid response for {url}: Status code {response.status_code}")
-                return False
+                # Delete from database
+                query = "DELETE FROM url_screenshots WHERE root_domain = %s"
+                cursor.execute(query, (domain,))
+
+                # Delete file from filesystem
+                file_path = os.path.join(screenshots_folder, file)
+                if os.path.exists(file_path):  # Check if the file exists before attempting to delete
+                    os.remove(file_path)
+
+            # Commit changes to the database after all operations are successful
+            self.connection.commit()
+
+        except mysql.connector.Error as error:
+            print(f"Database error: {error}")
+            if self.connection:
+                self.connection.rollback()  # Rollback in case of error
+
         except Exception as e:
-            logging.error(f"An error occurred while fetching {url}: {str(e)}")
-            return False
+            print(f"General error: {e}")
 
-    def update_database(self, url, screenshot_path):
-        try:
-            if not self.connection or not self.connection.is_connected():
-                self.connect_to_database()
+        finally:
+            # Close the cursor
+            if cursor:
+                cursor.close()
 
-            with self.connection.cursor() as cursor:
-                query = "INSERT INTO url_screenshots (root_domain, location) VALUES (%s, %s) ON DUPLICATE KEY UPDATE location = VALUES(location)"
-                cursor.execute(query, (url, screenshot_path))
-                self.connection.commit()
-        except mysql.connector.Error as e:
-            logging.error(f"Error updating the database: {e}")
-            # Reconnect or handle the error
-            self.connect_to_database()
+
 
     # Video Generation Logics are here
     def initialize_video_render_progress_bar(self):
