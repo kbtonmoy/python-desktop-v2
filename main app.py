@@ -404,6 +404,8 @@ class DatabaseApp:
         # Submit button
         tk.Button(self.root, text="Submit", command=self.save_video_settings).pack(pady=5)
 
+        self.create_back_option()
+
     def show_video_duration(self, duration):
         duration_label = tk.Label(self.root, text=f"Video Duration: {duration:.2f} seconds")
         duration_label.pack(pady=5)
@@ -606,6 +608,8 @@ class DatabaseApp:
         # Submit button
         tk.Button(self.root, text="Submit", command=self.generate_wp_pages).pack(pady=5)
 
+        self.create_back_option()
+
     def generate_wp_pages(self):
         selected_table = self.table_var.get()
         selected_status = self.status_var.get()
@@ -662,7 +666,7 @@ class DatabaseApp:
                 additional_data = dict(zip(additional_data_columns, additional_data_tuple))
 
                 modified_html_content = self.modify_html(additional_data, youtube_link)
-                wp_page_link = self.create_wp_page(modified_html_content, selected_status)
+                wp_page_link = self.create_wp_page(modified_html_content, additional_data, selected_status)
 
                 if wp_page_link:
                     update_query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
@@ -689,17 +693,26 @@ class DatabaseApp:
 
         return html_content
 
-    def create_wp_page(self, modified_html_content, status="draft"):
+    def create_wp_page(self, modified_html_content, additional_data, status="draft"):
         # Load WP REST API credentials from .env file
-        print('Gerenrating page in  Wordpress...')
+        print('Generating page in Wordpress...')
         wp_url = os.getenv("wp_site_url")
         wp_user = os.getenv("wp_site_username")
         wp_password = os.getenv("wp_site_application_password")
 
+        # Read and process the dynamic title from static/wp_page_title.html
+        with open("static/wp_page_title.html", "r") as title_file:
+            dynamic_title = title_file.read()
+
+        # Replace placeholders in the title with data from the database
+        for key, value in additional_data.items():
+            placeholder = "{" + key + "}"
+            dynamic_title = dynamic_title.replace(placeholder, str(value))
+
         # Prepare request for WP REST API
         headers = {'Content-Type': 'application/json'}
         auth = HTTPBasicAuth(wp_user, wp_password)
-        data = {"title": "test-title", "content": modified_html_content, "status": status}
+        data = {"title": dynamic_title, "content": modified_html_content, "status": status}
 
         # Send request to WP REST API
         response = requests.post(f"{wp_url}wp-json/wp/v2/pages", headers=headers, auth=auth, json=data)
@@ -707,7 +720,7 @@ class DatabaseApp:
         if response.status_code == 201:
             return response.json().get("link")
         else:
-            print(f"Failed to create WP page for {response.json()}")
+            print(f"Failed to create WP page: {response.json()}")
             return None
 
 # Global Functions are here
