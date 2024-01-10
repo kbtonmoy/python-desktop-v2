@@ -10,9 +10,12 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Ensure the 'logs' directory exists
+# Ensure the 'logs' and 'screenshots' directory exists
 if not os.path.exists('logs'):
     os.makedirs('logs')
+
+if not os.path.exists('screenshots'):
+    os.makedirs('screenshots')    
 
 logging.basicConfig(filename='logs/screenshot.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
 
