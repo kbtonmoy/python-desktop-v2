@@ -596,11 +596,19 @@ class DatabaseApp:
         table_dropdown = tk.OptionMenu(self.root, self.table_var, *tables)
         table_dropdown.pack(pady=5)
 
+        # Dropdown for status selection
+        tk.Label(self.root, text="Select the page status:").pack(pady=5)
+        self.status_var = tk.StringVar()
+        status_options = ["draft", "publish"]
+        status_dropdown = tk.OptionMenu(self.root, self.status_var, *status_options)
+        status_dropdown.pack(pady=5)
+
         # Submit button
         tk.Button(self.root, text="Submit", command=self.generate_wp_pages).pack(pady=5)
 
     def generate_wp_pages(self):
         selected_table = self.table_var.get()
+        selected_status = self.status_var.get()
         query = "SELECT root_domain, youtube_link FROM url_videos WHERE wp_link IS NULL"
         cursor = self.connection.cursor()
         cursor.execute(query)
@@ -620,7 +628,7 @@ class DatabaseApp:
         threads = []
 
         for record in records:
-            thread = threading.Thread(target=self.threaded_record_processing, args=(record, selected_table, semaphore))
+            thread = threading.Thread(target=self.threaded_record_processing, args=(record, selected_table, semaphore, selected_status))
             thread.start()
             threads.append(thread)
 
@@ -639,7 +647,7 @@ class DatabaseApp:
             print(f"Error while connecting to MySQL: {e}")
             return None
 
-    def threaded_record_processing(self, record, selected_table, semaphore):
+    def threaded_record_processing(self, record, selected_table, semaphore, selected_status):
         with semaphore:
             try:
                 # Establish a new connection for each thread
@@ -654,7 +662,7 @@ class DatabaseApp:
                 additional_data = dict(zip(additional_data_columns, additional_data_tuple))
 
                 modified_html_content = self.modify_html(additional_data, youtube_link)
-                wp_page_link = self.create_wp_page(modified_html_content)
+                wp_page_link = self.create_wp_page(modified_html_content, selected_status)
 
                 if wp_page_link:
                     update_query = "UPDATE url_videos SET wp_link = %s WHERE root_domain = %s"
@@ -666,7 +674,7 @@ class DatabaseApp:
             except Exception as e:
                 print(f"Error processing record {record}: {e}")
 
-    def modify_html(self, data, youtube_link):
+    def modify_html(self, data, modified_html_content):
         # Load your HTML file
         with open("static/wp_template.html", "r") as file:
             html_content = file.read()
@@ -677,11 +685,11 @@ class DatabaseApp:
             html_content = html_content.replace(placeholder, str(value))
 
         # Additionally replace the {youtube_link} placeholder
-        html_content = html_content.replace("{youtube_link}", youtube_link)
+        html_content = html_content.replace("{youtube_link}", modified_html_content)
 
         return html_content
 
-    def create_wp_page(self, youtube_link):
+    def create_wp_page(self, modified_html_content, status="draft"):
         # Load WP REST API credentials from .env file
         print('Gerenrating page in  Wordpress...')
         wp_url = os.getenv("wp_site_url")
@@ -691,15 +699,15 @@ class DatabaseApp:
         # Prepare request for WP REST API
         headers = {'Content-Type': 'application/json'}
         auth = HTTPBasicAuth(wp_user, wp_password)
-        data = {"title": "test-title", "content": youtube_link, "status": "publish"}
+        data = {"title": "test-title", "content": modified_html_content, "status": status}
 
         # Send request to WP REST API
-        response = requests.post(f"{wp_url}/wp-json/wp/v2/pages", headers=headers, auth=auth, json=data)
+        response = requests.post(f"{wp_url}wp-json/wp/v2/pages", headers=headers, auth=auth, json=data)
 
         if response.status_code == 201:
             return response.json().get("link")
         else:
-            print(f"Failed to create WP page for {youtube_link}: {response.status_code}")
+            print(f"Failed to create WP page for {response.json()}")
             return None
 
 # Global Functions are here
